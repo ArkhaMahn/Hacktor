@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<zapaddon>
+    <name>Hacktor</name>
+    <version>1</version>
+    <status>alpha</status>
+    <description>HTTP request tampering and fuzzing lab: 7800+ techniques across 40+ families for access-control bypass, auth/authz probing, HTTP smuggling, cache poisoning, injection probing, and OAuth 1.0a/2.0/OIDC tampering.</description>
+    <author>ArkhaMahn</author>
+    <url>https://github.com/zaproxy/zap-extensions</url>
+    <changes>Initial release: full port of hacktor with UI, granular controls, progress tracking, and false-positive suppression.</changes>
+    <repo>local</repo>
+    <extensions>
+        <extension>org.zaproxy.zap.extension.hacktor.ExtensionHacktor</extension>
+    </extensions>
+    <not-before-version>2.17.0</not-before-version>
+</zapaddon>
