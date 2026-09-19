@@ -57,9 +57,8 @@ public class ExtensionHacktor extends ExtensionAdaptor {
 
     @Override
     public String getDescription() {
-        return "HTTP request tampering and fuzzing lab: 7800+ techniques across 40+ families "
-            + "for access-control bypass, auth/authz probing, HTTP smuggling, cache poisoning, "
-            + "injection probing, and OAuth 1.0a/2.0/OIDC tampering.";
+        return "HTTP request tampering and fuzzing lab for probing security controls and "
+            + "bypassing access restrictions.";
     }
 
     @Override
