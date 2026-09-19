@@ -1199,14 +1199,9 @@ public class HacktorPanel extends AbstractPanel {
         JLabel title = new JLabel("Hacktor");
         title.setFont(title.getFont().deriveFont(Font.BOLD, fs + 4f));
         title.setForeground(FG);
-        JLabel subtitle = new JLabel(
-            "Probe 401/403 authorization bypass techniques against the selected request.");
-        subtitle.setFont(subtitle.getFont().deriveFont(fs - 1f));
-        subtitle.setForeground(FG_DIM);
         JPanel header = new JPanel(new BorderLayout(6, 0));
         header.setBackground(BG);
         header.add(title, BorderLayout.WEST);
-        header.add(subtitle, BorderLayout.CENTER);
         tab.add(header, BorderLayout.NORTH);
 
         TrackWidth stack = new TrackWidth();
