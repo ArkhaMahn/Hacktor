@@ -119,7 +119,9 @@ public class HacktorPanel extends AbstractPanel {
     private final JLabel timeoutLabel = new JLabel("Timeout:");
     private final JSpinner timeoutSpinner = new JSpinner(new SpinnerNumberModel(5, 1, 120, 1));
     private final JLabel maxProbesLabel = new JLabel("Max Probes:");
-    private final JSpinner maxProbesSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 10000, 1));
+    // Ceiling matches maxResultsSpinner: a full run is ~16k techniques, so a 10k
+    // cap could not even express a whole suite and silently dropped the tail.
+    private final JSpinner maxProbesSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 200000, 1));
     private final CustomHeaderTableModel customHeaderModel = new CustomHeaderTableModel();
     private final JTable customHeaderTable = new JTable(customHeaderModel);
     private final JButton addHeaderButton = new JButton("Add");
@@ -159,15 +161,22 @@ public class HacktorPanel extends AbstractPanel {
     private final JTable techniqueTable = new JTable(techniqueModel);
     private final JTextField filterField = new JTextField();
     private final JComboBox<String> filterColumnCombo = new JComboBox<>(new String[]{
-        "All", "Label", "Family", "Description"});
+        "All", "Label", "Family", "Description", "Position"});
     private final JLabel techniqueSummary = new JLabel("0 techniques");
     private final JCheckBox showCustomOnlyBox = new JCheckBox("Custom only", false);
+    private final JComboBox<String> positionCombo = new JComboBox<>(new String[]{
+        "All Positions", "URL", "Header", "Body", "Request"});
     private final JComboBox<String> vulnTypeCombo = new JComboBox<>(new String[]{
         "All Types", "401/403 Bypass"});
 
     // ─── Results tab ────────────────────────────────────────────────────
     private final ResultsTableModel resultsModel = new ResultsTableModel();
     private final JTable resultsTable = new JTable(resultsModel);
+    private final JCheckBox exactWireBox = new JCheckBox("Exact wire", false);
+    private final JTextArea exactRequestArea = new JTextArea();
+    /** Card layout switching the request pane between the parsed viewer and the
+     *  exact wire bytes. Null until buildResultsTab has run. */
+    private transient CardSwitch reqCard;
     private final JButton exportButton = new JButton("Export CSV");
     private final JButton resendButton = new JButton("Resend");
     private final JButton copyUrlButton = new JButton("Copy URL");
@@ -222,6 +231,10 @@ public class HacktorPanel extends AbstractPanel {
     public HacktorPanel(ExtensionHacktor extension) {
         super();
         this.extension = extension;
+        // Bind the registered config set before anything reads or writes settings,
+        // so persistence works regardless of whether ZAP has parsed it yet.
+        this.param = extension == null ? new HacktorParam() : extension.getParam();
+        this.param.ensureConfig();
         setName("Hacktor");
         setLayout(new BorderLayout(0, 0));
         setBackground(BG);
@@ -346,6 +359,32 @@ public class HacktorPanel extends AbstractPanel {
         t.getTableHeader().setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
         t.setRowHeight(22);
         t.setFont(new Font(Font.MONOSPACED, Font.PLAIN, t.getFont().getSize()));
+    }
+
+    /**
+     * Two-component card holder with a typed switch, so the request pane can be
+     * flipped between ZAP's parsed viewer and the exact wire bytes without the
+     * caller having to know the layout's string-key names.
+     */
+    private static final class CardSwitch extends JPanel {
+        private static final long serialVersionUID = 1L;
+        private final CardLayout layout = new CardLayout();
+        private final Map<String, JComponent> cards = new LinkedHashMap<>();
+
+        CardSwitch() {
+            super();
+            setLayout(layout);
+            setOpaque(false);
+        }
+
+        void add(String name, JComponent c) {
+            cards.put(name, c);
+            layout.show(this, name);
+        }
+
+        void show(String name) {
+            if (cards.containsKey(name)) layout.show(this, name);
+        }
     }
 
     private static void themeButton(JButton b) {
@@ -873,7 +912,11 @@ public class HacktorPanel extends AbstractPanel {
                 new org.apache.commons.httpclient.URI(oauthContext.baseNoQuery, true);
             base = new HttpMessage(uri);
         }
-        HacktorEngine.replacePath(base, oauthContext.baseNoQuery);
+        // Point the message at the detected endpoint. This must not use
+        // replacePath(baseNoQuery): that helper stores an input containing "://" as
+        // the URI path, which doubles the authority and leaves the base message
+        // un-cloneable, so every probe built from it would fail.
+        OauthEngine.applyBaseTarget(base, oauthContext.baseNoQuery);
         if (base.getRequestHeader().getHeader("User-Agent") == null) {
             base.getRequestHeader().setHeader("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
@@ -1626,27 +1669,21 @@ public class HacktorPanel extends AbstractPanel {
             : "OOB callbacks: " + url);
     }
 
-    private static String loadOobConfig() {
+    private String loadOobConfig() {
+        if (param == null) return "";
         try {
-            org.apache.commons.configuration.Configuration cfg =
-                Model.getSingleton().getOptionsParam().getConfig();
-            return cfg == null ? "" : cfg.getString("hacktor.oobUrl", "").trim();
+            return param.getOobUrl().trim();
         } catch (Exception ex) {
             return "";
         }
     }
 
-    /** Persists the callback URL into ZAP's global config and saves it immediately. */
-    private static boolean saveOobConfig(String url) {
+    /** Persists the callback URL through the registered config set and flushes it. */
+    private boolean saveOobConfig(String url) {
+        if (param == null) return false;
         try {
-            org.apache.commons.configuration.FileConfiguration cfg =
-                Model.getSingleton().getOptionsParam().getConfig();
-            if (cfg == null) return false;
-            cfg.setProperty("hacktor.oobUrl", url == null ? "" : url.trim());
-            try {
-                cfg.save();
-            } catch (Exception ignored) {
-            }
+            param.setOobUrl(url == null ? "" : url.trim());
+            param.save();
             return true;
         } catch (Exception ex) {
             return false;
@@ -1700,7 +1737,19 @@ public class HacktorPanel extends AbstractPanel {
         themeSelector(vulnTypeCombo);
         vulnTypeCombo.setToolTipText("Filter by vulnerability category");
         vulnTypeCombo.setPreferredSize(new Dimension(120, vulnTypeCombo.getPreferredSize().height));
-        filterBar.add(vulnTypeCombo, BorderLayout.WEST);
+
+        themeSelector(positionCombo);
+        positionCombo.setToolTipText(
+            "Filter by where the payload is written: URL (path/query), Header, Body, "
+            + "or Request (method, framing and whole-request probes)");
+        positionCombo.setPreferredSize(
+            new Dimension(110, positionCombo.getPreferredSize().height));
+
+        JPanel filterLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        filterLeft.setBackground(BG);
+        filterLeft.add(vulnTypeCombo);
+        filterLeft.add(positionCombo);
+        filterBar.add(filterLeft, BorderLayout.WEST);
 
         filterField.setToolTipText("Filter techniques by the selected column");
         filterField.putClientProperty("JTextField.placeholderText", "Filter\u2026");
@@ -1748,8 +1797,9 @@ public class HacktorPanel extends AbstractPanel {
         techniqueTable.getColumnModel().getColumn(0).setPreferredWidth(30);
         techniqueTable.getColumnModel().getColumn(0).setMaxWidth(30);
         techniqueTable.getColumnModel().getColumn(1).setPreferredWidth(120);
-        techniqueTable.getColumnModel().getColumn(2).setPreferredWidth(220);
-        techniqueTable.getColumnModel().getColumn(3).setPreferredWidth(0);
+        techniqueTable.getColumnModel().getColumn(2).setPreferredWidth(70);
+        techniqueTable.getColumnModel().getColumn(3).setPreferredWidth(220);
+        techniqueTable.getColumnModel().getColumn(4).setPreferredWidth(0);
 
         techniqueTable.addMouseListener(new MouseAdapter() {
             @Override
@@ -1791,6 +1841,7 @@ public class HacktorPanel extends AbstractPanel {
         filterColumnCombo.addActionListener(e -> applyTechniqueFilter());
         showCustomOnlyBox.addActionListener(e -> applyTechniqueFilter());
         vulnTypeCombo.addActionListener(e -> applyTechniqueFilter());
+        positionCombo.addActionListener(e -> applyTechniqueFilter());
         return tab;
     }
 
@@ -1878,11 +1929,38 @@ public class HacktorPanel extends AbstractPanel {
 
         JPanel reqPane = new JPanel(new BorderLayout(0, 0));
         reqPane.setBackground(BG_DARK);
-        JPanel reqHeader = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 4));
+        JPanel reqHeader = new JPanel(new BorderLayout(8, 0));
         reqHeader.setBackground(BG_DARK);
-        reqHeader.add(reqLbl, BorderLayout.NORTH);
+        reqHeader.add(reqLbl, BorderLayout.WEST);
+        exactWireBox.setToolTipText(
+            "Show the exact bytes put on the wire for the request, instead of ZAP's"
+            + " re-serialised model. Needed to judge a raw-wire probe: a literal '#'"
+            + " target, an obs-fold or a colon-less header line cannot survive the"
+            + " header model, so the parsed view silently disagrees with the wire.");
+        exactWireBox.setBackground(BG_DARK);
+        exactWireBox.setForeground(FG);
+        exactWireBox.addActionListener(e -> showSelectedResult());
+        JPanel reqHeaderRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        reqHeaderRight.setBackground(BG_DARK);
+        reqHeaderRight.add(exactWireBox);
+        reqHeader.add(reqHeaderRight, BorderLayout.EAST);
         reqPane.add(reqHeader, BorderLayout.NORTH);
-        reqPane.add(requestViewer, BorderLayout.CENTER);
+
+        exactRequestArea.setEditable(false);
+        exactRequestArea.setLineWrap(false);
+        exactRequestArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        exactRequestArea.setBackground(BG_DARK);
+        exactRequestArea.setForeground(FG_BRIGHT);
+        exactRequestArea.setCaretColor(FG_BRIGHT);
+        exactRequestArea.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+        JScrollPane exactScroll = new JScrollPane(exactRequestArea);
+        exactScroll.getViewport().setBackground(BG_DARK);
+        exactScroll.setBorder(BorderFactory.createEmptyBorder());
+
+        reqCard = new CardSwitch();
+        reqCard.add("parsed", requestViewer);
+        reqCard.add("exact", exactScroll);
+        reqPane.add(reqCard, BorderLayout.CENTER);
 
         JPanel respPane = new JPanel(new BorderLayout(0, 0));
         respPane.setBackground(BG_DARK);
@@ -2475,20 +2553,39 @@ public class HacktorPanel extends AbstractPanel {
         saveFamilies();
     }
 
+    /**
+     * Enables or disables every technique currently in view. When a filter is
+     * active this deliberately sweeps only the visible rows, so "work on the
+     * Header surface" followed by "Enable All" does not silently re-enable the
+     * 10k URL techniques the user just filtered out. Family checkboxes are
+     * re-derived from the real state rather than blanket-set, because a filtered
+     * sweep legitimately leaves a family half-enabled.
+     */
     private void setAllEnabled(boolean enabled) {
-        for (Technique t : techniqueModel.getAll()) t.setEnabled(enabled);
+        boolean partial = techniqueModel.isFiltered();
+        for (Technique t : techniqueModel.getVisible()) t.setEnabled(enabled);
         techniqueModel.fireTableDataChanged();
         updateCounts();
-        for (JCheckBox cb : familyBoxes.values()) cb.setSelected(enabled);
+        if (partial) {
+            syncFamilyBoxes();
+        } else {
+            for (JCheckBox cb : familyBoxes.values()) cb.setSelected(enabled);
+        }
         saveFamilies();
+        appendLog((partial ? "[*] Set " : "[*] Set all ") + techniqueModel.getVisible().size()
+            + (partial ? " filtered" : "") + " techniques "
+            + (enabled ? "enabled" : "disabled") + (partial ? " (filter active)" : "") + ".");
     }
 
     private void invertEnabled() {
-        for (Technique t : techniqueModel.getAll()) t.setEnabled(!t.isEnabled());
+        boolean partial = techniqueModel.isFiltered();
+        int n = techniqueModel.getVisible().size();
+        for (Technique t : techniqueModel.getVisible()) t.setEnabled(!t.isEnabled());
         techniqueModel.fireTableDataChanged();
         updateCounts();
         syncFamilyBoxes();
-        appendLog("[*] Inverted technique enable state.");
+        appendLog("[*] Inverted enable state of " + n
+            + (partial ? " filtered" : "") + " techniques" + (partial ? " (filter active)" : "") + ".");
         saveFamilies();
     }
 
@@ -2507,10 +2604,12 @@ public class HacktorPanel extends AbstractPanel {
         switch (col) {
             case "Label": return t.getLabel().toLowerCase().contains(q);
             case "Family": return t.getFamily().toLowerCase().contains(q);
+            case "Position": return t.getPosition().getDisplay().toLowerCase().contains(q);
             case "Description": return t.getDescription().toLowerCase().contains(q);
             default:
                 return t.getLabel().toLowerCase().contains(q)
                     || t.getFamily().toLowerCase().contains(q)
+                    || t.getPosition().getDisplay().toLowerCase().contains(q)
                     || t.getDescription().toLowerCase().contains(q);
         }
     }
@@ -2521,24 +2620,32 @@ public class HacktorPanel extends AbstractPanel {
         if (col == null) col = "All";
         final String colF = col;
         String vulnType = (String) vulnTypeCombo.getSelectedItem();
+        String pos = (String) positionCombo.getSelectedItem();
+        final String posF = (pos == null || pos.startsWith("All")) ? null : pos;
         Predicate<Technique> p = t -> true;
         if (showCustomOnlyBox.isSelected()) p = p.and(Technique::isCustom);
         if (vulnType != null && !"All Types".equals(vulnType)) {
             p = p.and(t -> t.getFamily().equalsIgnoreCase(vulnType));
         }
+        if (posF != null) {
+            p = p.and(t -> matchesPosition(t, posF));
+        }
         if (!q.isEmpty()) p = p.and(t -> matchesColumn(t, colF, q));
         techniqueModel.setFilter(p);
     }
 
+    /**
+     * @param pos combo display name; the leading "All" entry matches every surface.
+     */
+    static boolean matchesPosition(Technique t, String pos) {
+        if (pos == null || pos.startsWith("All")) return true;
+        return t.getPosition().getDisplay().equalsIgnoreCase(pos);
+    }
+
     // ─── Persistence: settings / families / headers ────────────────────
 
-    private static org.apache.commons.configuration.FileConfiguration hacktorCfg() {
-        try {
-            return Model.getSingleton().getOptionsParam().getConfig();
-        } catch (Exception ex) {
-            return null;
-        }
-    }
+    /** The registered ZAP config set. Assigned in the constructor before first use. */
+    private HacktorParam param;
 
     private static String cfgStr(String key, String def) {
         try {
@@ -2597,112 +2704,106 @@ public class HacktorPanel extends AbstractPanel {
         return sb.toString();
     }
 
-    /** Saves all general-run settings and spinners to ZAP config. */
+    /**
+     * Copies the current control state into {@link HacktorParam} and flushes it to
+     * ZAP's config. Each option is its own key, so nothing depends on a
+     * newline-delimited blob surviving XML serialisation intact.
+     */
     private void saveSettings() {
-        try {
-            org.apache.commons.configuration.FileConfiguration cfg = hacktorCfg();
-            if (cfg == null) return;
-            StringBuilder sb = new StringBuilder();
-            sb.append("followRedirects=").append(followRedirectsBox.isSelected()).append('\n');
-            sb.append("suppressErrors=").append(suppressErrorsBox.isSelected()).append('\n');
-            sb.append("stopOnCandidate=").append(stopOnCandidateBox.isSelected()).append('\n');
-            sb.append("retryOnError=").append(retryOnErrorBox.isSelected()).append('\n');
-            sb.append("useRawWire=").append(useRawWireBox.isSelected()).append('\n');
-            sb.append("backoff=").append(backoffBox.isSelected()).append('\n');
-            sb.append("fuzzMode=").append(fuzzModeBox.isSelected()).append('\n');
-            sb.append("fuzzUrl=").append(fuzzUrlBox.isSelected()).append('\n');
-            sb.append("urlMode=").append(urlModeCombo.getSelectedIndex()).append('\n');
-            sb.append("fuzzHeader=").append(fuzzHeaderBox.isSelected()).append('\n');
-            sb.append("fuzzBody=").append(fuzzBodyBox.isSelected()).append('\n');
-            sb.append("classicTier=").append(classicTierBox.isSelected()).append('\n');
-            sb.append("rareTier=").append(rareTierBox.isSelected()).append('\n');
-            sb.append("novelTier=").append(novelTierBox.isSelected()).append('\n');
-            sb.append("oauthClassic=").append(oauthClassicBox.isSelected()).append('\n');
-            sb.append("oauthRare=").append(oauthRareBox.isSelected()).append('\n');
-            sb.append("oauthNovel=").append(oauthNovelBox.isSelected()).append('\n');
-            sb.append("showCustomOnly=").append(showCustomOnlyBox.isSelected()).append('\n');
-            sb.append("candidatesOnly=").append(candidatesOnlyBox.isSelected()).append('\n');
-            sb.append("errorsOnly=").append(errorsOnlyBox.isSelected()).append('\n');
-            sb.append("rateLimit=").append(rateLimitSpinner.getValue()).append('\n');
-            sb.append("threads=").append(threadsSpinner.getValue()).append('\n');
-            sb.append("timeout=").append(timeoutSpinner.getValue()).append('\n');
-            sb.append("maxProbes=").append(maxProbesSpinner.getValue()).append('\n');
-            sb.append("maxResults=").append(maxResultsSpinner.getValue()).append('\n');
-            sb.append("logCap=").append(logCapSpinner.getValue()).append('\n');
-            sb.append("filterCol=").append(filterColumnCombo.getSelectedIndex()).append('\n');
-            sb.append("vulnType=").append(vulnTypeCombo.getSelectedIndex()).append('\n');
-            sb.append("bodyMode=").append(bodyModeCombo.getSelectedIndex()).append('\n');
-            sb.append("wordlist=").append(esc(fuzzWordlistField.getText().trim())).append('\n');
-            cfg.setProperty("hacktor.settings", sb.toString());
-            try { cfg.save(); } catch (Exception ignored) {}
-        } catch (Exception ignored) {}
+        if (param == null) return;
+        param.setFollowRedirects(followRedirectsBox.isSelected());
+        param.setSuppressErrors(suppressErrorsBox.isSelected());
+        param.setStopOnCandidate(stopOnCandidateBox.isSelected());
+        param.setRetryOnError(retryOnErrorBox.isSelected());
+        param.setUseRawWire(useRawWireBox.isSelected());
+        param.setBackoff(backoffBox.isSelected());
+        param.setFuzzMode(fuzzModeBox.isSelected());
+        param.setFuzzUrl(fuzzUrlBox.isSelected());
+        param.setUrlMode(urlModeCombo.getSelectedIndex());
+        param.setFuzzHeader(fuzzHeaderBox.isSelected());
+        param.setFuzzBody(fuzzBodyBox.isSelected());
+        param.setClassicTier(classicTierBox.isSelected());
+        param.setRareTier(rareTierBox.isSelected());
+        param.setNovelTier(novelTierBox.isSelected());
+        param.setOauthClassic(oauthClassicBox.isSelected());
+        param.setOauthRare(oauthRareBox.isSelected());
+        param.setOauthNovel(oauthNovelBox.isSelected());
+        param.setShowCustomOnly(showCustomOnlyBox.isSelected());
+        param.setExactWire(exactWireBox.isSelected());
+        param.setCandidatesOnly(candidatesOnlyBox.isSelected());
+        param.setErrorsOnly(errorsOnlyBox.isSelected());
+        param.setRateLimit((Integer) rateLimitSpinner.getValue());
+        param.setThreads((Integer) threadsSpinner.getValue());
+        param.setTimeout((Integer) timeoutSpinner.getValue());
+        param.setMaxProbes((Integer) maxProbesSpinner.getValue());
+        param.setMaxResults((Integer) maxResultsSpinner.getValue());
+        param.setLogCap((Integer) logCapSpinner.getValue());
+        param.setFilterCol(filterColumnCombo.getSelectedIndex());
+        param.setVulnType(vulnTypeCombo.getSelectedIndex());
+        param.setPosition(positionCombo.getSelectedIndex());
+        param.setBodyMode(bodyModeCombo.getSelectedIndex());
+        param.setWordlist(fuzzWordlistField.getText().trim());
+        param.save();
     }
 
-    /** Restores controls from persisted config. Must run before any listeners that save. */
+    /** Restores controls from the registered config set. Must run before any save listeners. */
     private void loadSettings() {
+        if (param == null) return;
+        followRedirectsBox.setSelected(param.isFollowRedirects());
+        suppressErrorsBox.setSelected(param.isSuppressErrors());
+        stopOnCandidateBox.setSelected(param.isStopOnCandidate());
+        retryOnErrorBox.setSelected(param.isRetryOnError());
+        useRawWireBox.setSelected(param.isUseRawWire());
+        backoffBox.setSelected(param.isBackoff());
+        fuzzModeBox.setSelected(param.isFuzzMode());
+        fuzzUrlBox.setSelected(param.isFuzzUrl());
+        clampIdx(urlModeCombo, param.getUrlMode());
+        fuzzHeaderBox.setSelected(param.isFuzzHeader());
+        fuzzBodyBox.setSelected(param.isFuzzBody());
+        classicTierBox.setSelected(param.isClassicTier());
+        rareTierBox.setSelected(param.isRareTier());
+        novelTierBox.setSelected(param.isNovelTier());
+        oauthClassicBox.setSelected(param.isOauthClassic());
+        oauthRareBox.setSelected(param.isOauthRare());
+        oauthNovelBox.setSelected(param.isOauthNovel());
+        showCustomOnlyBox.setSelected(param.isShowCustomOnly());
+        exactWireBox.setSelected(param.isExactWire());
+        candidatesOnlyBox.setSelected(param.isCandidatesOnly());
+        errorsOnlyBox.setSelected(param.isErrorsOnly());
+        clampIdx(rateLimitSpinner, param.getRateLimit());
+        clampIdx(threadsSpinner, param.getThreads());
+        clampIdx(timeoutSpinner, param.getTimeout());
+        clampIdx(maxProbesSpinner, param.getMaxProbes());
+        clampIdx(maxResultsSpinner, param.getMaxResults());
+        clampIdx(logCapSpinner, param.getLogCap());
+        clampIdx(filterColumnCombo, param.getFilterCol());
+        clampIdx(vulnTypeCombo, param.getVulnType());
+        clampIdx(positionCombo, param.getPosition());
+        clampIdx(bodyModeCombo, param.getBodyMode());
+        fuzzWordlistField.setText(param.getWordlist());
+    }
+
+    /** Applies a persisted index, keeping it inside the control's own range. */
+    private static void clampIdx(JSpinner sp, int v) {
         try {
-            String raw = cfgStr("hacktor.settings", null);
-            if (raw == null) return;
-            Map<String, String> m = new LinkedHashMap<>();
-            for (String line : raw.split("\n")) {
-                int eq = line.indexOf('=');
-                if (eq > 0) m.put(line.substring(0, eq), line.substring(eq + 1));
-            }
-            setIf(m, "followRedirects", b -> followRedirectsBox.setSelected(b));
-            setIf(m, "suppressErrors",  b -> suppressErrorsBox.setSelected(b));
-            setIf(m, "stopOnCandidate", b -> stopOnCandidateBox.setSelected(b));
-            setIf(m, "retryOnError",    b -> retryOnErrorBox.setSelected(b));
-            setIf(m, "useRawWire",      b -> useRawWireBox.setSelected(b));
-            setIf(m, "backoff",         b -> backoffBox.setSelected(b));
-            setIf(m, "fuzzMode",        b -> fuzzModeBox.setSelected(b));
-            setIf(m, "fuzzUrl",         b -> fuzzUrlBox.setSelected(b));
-            setIdx(m, "urlMode",        urlModeCombo, 0, 2);
-            setIf(m, "fuzzHeader",      b -> fuzzHeaderBox.setSelected(b));
-            setIf(m, "fuzzBody",        b -> fuzzBodyBox.setSelected(b));
-            setIf(m, "classicTier",     b -> classicTierBox.setSelected(b));
-            setIf(m, "rareTier",        b -> rareTierBox.setSelected(b));
-            setIf(m, "novelTier",       b -> novelTierBox.setSelected(b));
-            setIf(m, "oauthClassic",    b -> oauthClassicBox.setSelected(b));
-            setIf(m, "oauthRare",       b -> oauthRareBox.setSelected(b));
-            setIf(m, "oauthNovel",      b -> oauthNovelBox.setSelected(b));
-            setIf(m, "showCustomOnly",  b -> showCustomOnlyBox.setSelected(b));
-            setIf(m, "candidatesOnly",  b -> candidatesOnlyBox.setSelected(b));
-            setIf(m, "errorsOnly",      b -> errorsOnlyBox.setSelected(b));
-            setIdx(m, "rateLimit", rateLimitSpinner, 0, 10000);
-            setIdx(m, "threads",   threadsSpinner,   1, 16);
-            setIdx(m, "timeout",   timeoutSpinner,   1, 120);
-            setIdx(m, "maxProbes", maxProbesSpinner, 0, 10000);
-            setIdx(m, "maxResults",maxResultsSpinner,1000, 200000);
-            setIdx(m, "logCap",    logCapSpinner,    25, 10000);
-            setIdx(m, "filterCol", filterColumnCombo, 0, filterColumnCombo.getItemCount() - 1);
-            setIdx(m, "vulnType",  vulnTypeCombo,    0, vulnTypeCombo.getItemCount() - 1);
-            setIdx(m, "bodyMode",  bodyModeCombo,    0, bodyModeCombo.getItemCount() - 1);
-            if (m.containsKey("wordlist")) fuzzWordlistField.setText(unesc(m.get("wordlist")));
-        } catch (Exception ignored) {}
+            SpinnerNumberModel m = (SpinnerNumberModel) sp.getModel();
+            int hi = m.getMaximum() instanceof Integer
+                ? (Integer) m.getMaximum() : Integer.MAX_VALUE;
+            int lo = m.getMinimum() instanceof Integer
+                ? (Integer) m.getMinimum() : Integer.MIN_VALUE;
+            sp.setValue(Math.min(hi, Math.max(lo, v)));
+        } catch (Exception ignored) {
+        }
     }
 
-    private static void setIf(Map<String, String> m, String k, java.util.function.Consumer<Boolean> s) {
-        if (!m.containsKey(k)) return;
-        s.accept(Boolean.parseBoolean(m.get(k)));
-    }
-
-    private static void setIdx(Map<String, String> m, String k, JSpinner sp, int lo, int hi) {
-        if (!m.containsKey(k)) return;
-        try { int v = Integer.parseInt(m.get(k)); sp.setValue(Math.min(hi, Math.max(lo, v))); }
-        catch (Exception ignored) {}
-    }
-
-    private static void setIdx(Map<String, String> m, String k, JComboBox<?> cb, int lo, int hi) {
-        if (!m.containsKey(k)) return;
-        try { int v = Integer.parseInt(m.get(k)); cb.setSelectedIndex(Math.min(hi, Math.max(lo, v))); }
-        catch (Exception ignored) {}
+    private static void clampIdx(JComboBox<?> cb, int v) {
+        cb.setSelectedIndex(Math.min(cb.getItemCount() - 1, Math.max(0, v)));
     }
 
     /** Persist the current family/row enable state so it survives restarts and rebuilds. */
     private void saveFamilies() {
+        if (param == null) return;
         try {
-            org.apache.commons.configuration.FileConfiguration cfg = hacktorCfg();
-            if (cfg == null) return;
             persistedFamilyOn.clear();
             Set<String> allOn = new LinkedHashSet<>();
             Set<String> allOff = new LinkedHashSet<>();
@@ -2737,35 +2838,34 @@ public class HacktorPanel extends AbstractPanel {
             persistedRowsOn.addAll(rowOn);
             persistedRowsOff.clear();
             persistedRowsOff.addAll(rowOff);
-            cfg.setProperty("hacktor.famOn",  String.join("\n", allOn));
-            cfg.setProperty("hacktor.famOff", String.join("\n", allOff));
-            cfg.setProperty("hacktor.rowsOn", String.join("\n", rowOn));
-            cfg.setProperty("hacktor.rowsOff", String.join("\n", rowOff));
-            try { cfg.save(); } catch (Exception ignored) {}
+            param.setFamOn(String.join("\n", allOn));
+            param.setFamOff(String.join("\n", allOff));
+            param.setRowsOn(String.join("\n", rowOn));
+            param.setRowsOff(String.join("\n", rowOff));
+            param.save();
         } catch (Exception ignored) {}
     }
 
     private void loadFamiliesFromConfig() {
+        if (param == null) return;
         try {
-            String on  = cfgStr("hacktor.famOn",  "");
-            String off = cfgStr("hacktor.famOff", "");
+            String on  = param.getFamOn();
+            String off = param.getFamOff();
             persistedFamilyOn.clear();
             for (String f : on.split("\n"))  { f = f.trim(); if (!f.isEmpty()) persistedFamilyOn.put(f, Boolean.TRUE); }
             for (String f : off.split("\n")) { f = f.trim(); if (!f.isEmpty()) persistedFamilyOn.put(f, Boolean.FALSE); }
-            String ron  = cfgStr("hacktor.rowsOn",  "");
-            String roff = cfgStr("hacktor.rowsOff", "");
+            String ron  = param.getRowsOn();
+            String roff = param.getRowsOff();
             persistedRowsOn.clear();
             persistedRowsOff.clear();
             for (String l : ron.split("\n"))  { l = l.trim(); if (!l.isEmpty()) persistedRowsOn.add(l); }
             for (String l : roff.split("\n")) { l = l.trim(); if (!l.isEmpty()) persistedRowsOff.add(l); }
         } catch (Exception ignored) {}
     }
-
     /** Persists current custom-header rules so they survive ZAP restarts. */
     private void saveHeaders() {
+        if (param == null) return;
         try {
-            org.apache.commons.configuration.FileConfiguration cfg = hacktorCfg();
-            if (cfg == null) return;
             StringBuilder sb = new StringBuilder();
             boolean first = true;
             for (HacktorEngine.CustomHeader ch : customHeaderModel.getRules()) {
@@ -2777,14 +2877,15 @@ public class HacktorPanel extends AbstractPanel {
                   .append(ch.getMode().name());
                 first = false;
             }
-            cfg.setProperty("hacktor.headers", sb.toString());
-            try { cfg.save(); } catch (Exception ignored) {}
+            param.setHeaders(sb.toString());
+            param.save();
         } catch (Exception ignored) {}
     }
 
     private void loadHeadersFromConfig() {
+        if (param == null) return;
         try {
-            String raw = cfgStr("hacktor.headers", "");
+            String raw = param.getHeaders();
             if (raw.isEmpty()) return;
             for (String line : raw.split("\n")) {
                 if (line.trim().isEmpty()) continue;
@@ -2804,9 +2905,8 @@ public class HacktorPanel extends AbstractPanel {
     }
 
     private void saveFixedHeaders() {
+        if (param == null) return;
         try {
-            org.apache.commons.configuration.FileConfiguration cfg = hacktorCfg();
-            if (cfg == null) return;
             StringBuilder sb = new StringBuilder();
             boolean first = true;
             for (HacktorEngine.CustomHeader h : fixedHeaderModel.getFixedHeaders()) {
@@ -2815,14 +2915,15 @@ public class HacktorPanel extends AbstractPanel {
                   .append(esc(h.getValues().isEmpty() ? "" : String.join(", ", h.getValues())));
                 first = false;
             }
-            cfg.setProperty("hacktor.fixedheaders", sb.toString());
-            try { cfg.save(); } catch (Exception ignored) {}
+            param.setFixedHeaders(sb.toString());
+            param.save();
         } catch (Exception ignored) {}
     }
 
     private void loadFixedHeadersFromConfig() {
+        if (param == null) return;
         try {
-            String raw = cfgStr("hacktor.fixedheaders", "");
+            String raw = param.getFixedHeaders();
             if (raw.isEmpty()) return;
             for (String line : raw.split("\n")) {
                 if (line.trim().isEmpty()) continue;
@@ -2845,6 +2946,11 @@ public class HacktorPanel extends AbstractPanel {
         loadFixedHeadersFromConfig();
         syncFixedHeadersToEngine();
         engine.setForceRawWire(useRawWireBox.isSelected());
+        // A pre-existing single-blob config was expanded into individual keys during
+        // parse(); persist that rewrite so it only happens once.
+        if (param != null && param.isUpgraded()) {
+            param.save();
+        }
 
         for (JCheckBox cb : new JCheckBox[]{
                 followRedirectsBox, suppressErrorsBox, stopOnCandidateBox,
@@ -2860,7 +2966,7 @@ public class HacktorPanel extends AbstractPanel {
             sp.addChangeListener(e -> saveSettings());
         }
         for (JComboBox<?> cm : new JComboBox<?>[]{
-                filterColumnCombo, vulnTypeCombo, bodyModeCombo, urlModeCombo}) {
+                filterColumnCombo, vulnTypeCombo, positionCombo, bodyModeCombo, urlModeCombo}) {
             cm.addItemListener(e -> saveSettings());
         }
         fuzzWordlistField.getDocument().addDocumentListener(new DocumentListener() {
@@ -3122,16 +3228,74 @@ public class HacktorPanel extends AbstractPanel {
         if (r == null) {
             requestViewer.clearView();
             responseViewer.clearView();
+            showExactRequest(null);
             return;
         }
         HttpMessage m = r.getMessage();
         if (m == null) {
             requestViewer.clearView();
             responseViewer.clearView();
+            showExactRequest(null);
             return;
         }
         requestViewer.setMessage(m, true);
         responseViewer.setMessage(m, true);
+        showExactRequest(r);
+    }
+
+    /**
+     * Swaps the request pane between ZAP's parsed view and the exact bytes that were
+     * written to the socket. The parsed view is the default because it is more
+     * readable, but for a raw-wire technique it can misrepresent the request: the
+     * header model cannot hold a colon-less line, an obs-fold or a bare CR, and it
+     * re-encodes the request-target. The bytes come from {@link Result#getWireBytes()},
+     * captured at send time — re-serialising the stored message here would lose
+     * exactly the details this view exists to show.
+     */
+    private void showExactRequest(Result r) {
+        if (!exactWireBox.isSelected()) {
+            if (reqCard != null) reqCard.show("parsed");
+            return;
+        }
+        byte[] raw = r == null ? null : r.getWireBytes();
+        if (raw == null) {
+            // No capture: either nothing is selected, or this row went out over
+            // ZAP's HttpSender, whose bytes we do not observe. Do not invent them.
+            exactRequestArea.setText(r == null
+                ? ""
+                : "(no exact wire capture: this request was sent by ZAP's HttpSender,\n"
+                  + " not the raw socket, so its bytes were not observed.\n"
+                  + "Only raw-wire techniques record byte-exact requests.)");
+        } else {
+            exactRequestArea.setText(toDisplayable(raw));
+        }
+        exactRequestArea.setCaretPosition(0);
+        if (reqCard != null) reqCard.show("exact");
+    }
+
+    /**
+     * Renders raw HTTP bytes for display. CR and LF are shown as visible markers so
+     * the line terminators — the whole point of an obs-fold or CRLF-injection probe —
+     * are visible, and any non-printable byte is escaped. The result is a faithful
+     * view of the bytes, not a re-parse.
+     */
+    static String toDisplayable(byte[] raw) {
+        StringBuilder sb = new StringBuilder(raw.length + 32);
+        for (byte b : raw) {
+            int c = b & 0xFF;
+            switch (c) {
+                case '\r': sb.append("␍"); break;
+                case '\n': sb.append("␊\n"); break;
+                case '\t': sb.append("␉"); break;
+                default:
+                    if (c < 0x20 || c == 0x7F) {
+                        sb.append("\\x").append(String.format("%02X", c));
+                    } else {
+                        sb.append((char) c);
+                    }
+            }
+        }
+        return sb.toString();
     }
 
     private Result getSelectedResult() {
@@ -3199,6 +3363,7 @@ public class HacktorPanel extends AbstractPanel {
         summaryLabel.setText("Ready");
         requestViewer.clearView();
         responseViewer.clearView();
+        exactRequestArea.setText("");
         updateCounts();
         appendLog("[*] Results cleared.");
     }
@@ -4018,15 +4183,24 @@ public class HacktorPanel extends AbstractPanel {
         private static final long serialVersionUID = 1L;
         private List<Technique> all = new ArrayList<>();
         private List<Technique> visible = new ArrayList<>();
+        private Predicate<Technique> filter = null;
 
         void setRows(List<Technique> techs) {
             all = new ArrayList<>(techs);
-            recompute();
+            refilter();
         }
 
         void setFilter(Predicate<Technique> pred) {
-            visible = pred == null ? new ArrayList<>(all)
-                : all.stream().filter(pred).collect(Collectors.toList());
+            filter = pred;
+            refilter();
+        }
+
+        /** Re-applies the current filter. Every mutation of {@link #all} must go
+         *  through here, otherwise the view silently reverts to unfiltered and a
+         *  filtered bulk sweep would widen to the whole catalogue. */
+        private void refilter() {
+            visible = filter == null ? new ArrayList<>(all)
+                : all.stream().filter(filter).collect(Collectors.toList());
             fireTableDataChanged();
         }
 
@@ -4035,21 +4209,25 @@ public class HacktorPanel extends AbstractPanel {
         }
 
         List<Technique> getAll() { return Collections.unmodifiableList(all); }
+        List<Technique> getVisible() { return Collections.unmodifiableList(visible); }
+        /** True when a filter is actually narrowing the view, so bulk sweeps are partial. */
+        boolean isFiltered() { return visible.size() != all.size(); }
         Technique getAt(int row) {
             return (row >= 0 && row < visible.size()) ? visible.get(row) : null;
         }
-        void addCustom(Technique t) { all.add(t); visible = new ArrayList<>(all); fireTableDataChanged(); }
-        void removeCustom(Technique t) { all.remove(t); visible = new ArrayList<>(all); fireTableDataChanged(); }
+        void addCustom(Technique t) { all.add(t); refilter(); }
+        void removeCustom(Technique t) { all.remove(t); refilter(); }
 
         @Override public int getRowCount() { return visible.size(); }
-        @Override public int getColumnCount() { return 5; }
+        @Override public int getColumnCount() { return 6; }
         @Override public String getColumnName(int c) {
             switch (c) {
                 case 0: return "On";
                 case 1: return "Category";
-                case 2: return "Technique";
-                case 3: return "Tier";
-                case 4: return "Description";
+                case 2: return "Position";
+                case 3: return "Technique";
+                case 4: return "Tier";
+                case 5: return "Description";
                 default: return "";
             }
         }
@@ -4061,9 +4239,10 @@ public class HacktorPanel extends AbstractPanel {
             switch (col) {
                 case 0: return t.isEnabled();
                 case 1: return t.getFamily();
-                case 2: return t.getLabel();
-                case 3: return tierName(t.getTier());
-                case 4: return t.getDescription();
+                case 2: return t.getPosition().getDisplay();
+                case 3: return t.getLabel();
+                case 4: return tierName(t.getTier());
+                case 5: return t.getDescription();
                 default: return "";
             }
         }
@@ -4376,18 +4555,21 @@ public class HacktorPanel extends AbstractPanel {
                 t.setCustomPlacement(VulnCatalog.placementKind(
                     (String) placementCombo.getSelectedItem()));
                 t.setCustomPayload(encodePayload(sanitize(payloadField.getText().trim())));
+                t.setPosition(VulnCatalog.positionForPlacement(t.getCustomPlacement()));
             } else if (typeCombo.getSelectedIndex() == 0) {
                 t.setCustomPath(pathField.getText().trim());
                 t.setCustomHeaderName(null);
                 t.setCustomHeaderValue(null);
                 t.setCustomPlacement(null);
                 t.setCustomPayload(null);
+                t.setPosition(Technique.Position.URL);
             } else {
                 t.setCustomPath(null);
                 t.setCustomHeaderName(headerNameField.getText().trim());
                 t.setCustomHeaderValue(headerValueField.getText().trim());
                 t.setCustomPlacement(null);
                 t.setCustomPayload(null);
+                t.setPosition(Technique.Position.HEADER);
             }
         }
 
