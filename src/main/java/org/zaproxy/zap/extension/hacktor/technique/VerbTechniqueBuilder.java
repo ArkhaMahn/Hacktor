@@ -9,6 +9,9 @@ public class VerbTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Malformed Verbs"; }
     @Override public int getOrder() { return 20; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.REQUEST; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
