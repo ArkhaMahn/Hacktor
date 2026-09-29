@@ -13,9 +13,14 @@ public class ExtensionHacktor extends ExtensionAdaptor {
 
     private static final String NAME = "ExtensionHacktor";
     private HacktorPanel panel;
+    private HacktorParam param = new HacktorParam();
 
     public ExtensionHacktor() {
         super(NAME);
+    }
+
+    HacktorParam getParam() {
+        return param;
     }
 
     @Override
@@ -26,10 +31,15 @@ public class ExtensionHacktor extends ExtensionAdaptor {
     @Override
     public void hook(ExtensionHook extensionHook) {
         super.hook(extensionHook);
+        // Register the config set with ZAP so it is part of the managed configuration:
+        // parsed at startup, and included in config import/export.
+        extensionHook.addOptionsParamSet(param);
+
         if (getView() != null) {
             panel = new HacktorPanel(this);
             ExtensionHookView hookView = extensionHook.getHookView();
             hookView.addWorkPanel(panel);
+            hookView.addOptionPanel(new HacktorParamPanel());
 
             // Tools menu item
             JMenuItem menuItem = new JMenuItem("Hacktor\u2026");
