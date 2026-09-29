@@ -9,6 +9,13 @@ public class MethodOverrideTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Method Override"; }
     @Override public int getOrder() { return 29; }
 
+    /**
+     * Mixed: the override header variants write to the header block while the
+     * query variants rewrite the request-target, so each technique is stamped
+     * where it is created and the family-level default stays null.
+     */
+    @Override public Technique.Position getPosition() { return null; }
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
@@ -21,12 +28,14 @@ public class MethodOverrideTechniqueBuilder extends AbstractTechniqueBuilder {
         for (String oh : overrideHeaders) {
             for (String ov : overrideMethods) {
                 final String hn = oh, hv = ov;
-                techs.add(new Technique("Method Override", "MOverride:" + oh + "=" + ov,
+                at(techs, Technique.Position.HEADER,
+                   new Technique("Method Override", "MOverride:" + oh + "=" + ov,
                     "Set " + oh + ": " + ov,
                     base -> { HttpMessage c = cloneMsg(base); addHeader(c, hn, hv); return c; }));
             }
         }
-        techs.add(new Technique("Method Override", "MOverride:_method=GET",
+        at(techs, Technique.Position.HEADER,
+           new Technique("Method Override", "MOverride:_method=GET",
             "Set Content-Type to form-urlencoded for _method override",
             base -> { HttpMessage c = cloneMsg(base); addHeader(c, "Content-Type", "application/x-www-form-urlencoded"); return c; }));
 
@@ -38,13 +47,15 @@ public class MethodOverrideTechniqueBuilder extends AbstractTechniqueBuilder {
         };
         for (String qo : queryOverrides) {
             final String p = qo;
-            techs.add(new Technique("Method Override", "MOverrideQ:" + qo,
+            at(techs, Technique.Position.URL,
+               new Technique("Method Override", "MOverrideQ:" + qo,
                 "Query-based method override: " + qo,
                 base -> {
                     HttpMessage c = cloneMsg(base);
                     String q = ctx.origQuery.isEmpty() ? "?" : ctx.origQuery + "&";
                     replacePath(c, ctx.baseClean + q + p);
-                    return c; }));
+                    return c;
+                }));
         }
     }
 }
