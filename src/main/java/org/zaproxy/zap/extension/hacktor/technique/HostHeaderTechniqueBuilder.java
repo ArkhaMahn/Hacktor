@@ -9,6 +9,9 @@ public class HostHeaderTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Host Header"; }
     @Override public int getOrder() { return 45; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.HEADER; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
