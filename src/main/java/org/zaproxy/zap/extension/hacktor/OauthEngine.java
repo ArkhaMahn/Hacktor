@@ -525,18 +525,49 @@ public final class OauthEngine {
         return np;
     }
 
+    /**
+     * Points the message at {@code baseNoQuery} with an origin-form request-target
+     * (path, optionally {@code ?query}), leaving the authority alone.
+     *
+     * <p>This must not go through {@link HacktorEngine#replacePath}: that helper
+     * treats an input containing "://" as an absolute request-target and stores the
+     * whole string as the URI <em>path</em>. Doing that here produced
+     * {@code http://hosthttp://host/oauth2/authorize?...}, which ZAP cannot
+     * re-parse — the next {@code cloneAll()} throws "invalid port number" and comes
+     * back with a null URI, so every OAuth probe failed silently. The authority is
+     * applied to the URI's own components instead, and the literal path still
+     * travels over the wire side-channel.
+     */
+    private static void applyTarget(HttpMessage msg, String baseNoQuery, String literalPathQuery)
+            throws Exception {
+        int q = literalPathQuery.indexOf('?');
+        String pathPart = q >= 0 ? literalPathQuery.substring(0, q) : literalPathQuery;
+        String queryPart = q >= 0 ? literalPathQuery.substring(q + 1) : null;
+        org.apache.commons.httpclient.URI uri =
+            new org.apache.commons.httpclient.URI(baseNoQuery, true);
+        if (!pathPart.isEmpty()) uri.setPath(pathPart);
+        if (queryPart != null) uri.setQuery(queryPart);
+        msg.getRequestHeader().setURI(uri);
+    }
+
+    /**
+     * Resets a message to the bare detected endpoint: the authority and path from
+     * {@code baseNoQuery}, with any query and body parameters dropped so each
+     * technique re-derives them.
+     */
+    public static void applyBaseTarget(HttpMessage msg, String baseNoQuery) {
+        try {
+            msg.getRequestHeader()
+                .setURI(new org.apache.commons.httpclient.URI(baseNoQuery, true));
+        } catch (Exception ignored) {
+        }
+    }
+
     /** Enforces the exact wire target and body on a message (literal path side-channel). */
     public static void buildTarget(HttpMessage msg, Wire wire) {
         try {
-            int q = wire.literalPathQuery.indexOf('?');
-            String queryPart = q >= 0 ? wire.literalPathQuery.substring(q + 1) : "";
-            if (queryPart.isEmpty()) {
-                HacktorEngine.setLiteralPath(msg, wire.literalPathQuery);
-                HacktorEngine.replacePath(msg, wire.baseNoQuery);
-            } else {
-                HacktorEngine.replacePath(msg, wire.baseNoQuery + "?" + queryPart);
-                HacktorEngine.setLiteralPath(msg, wire.literalPathQuery);
-            }
+            applyTarget(msg, wire.baseNoQuery, wire.literalPathQuery);
+            HacktorEngine.setLiteralPath(msg, wire.literalPathQuery);
             if (wire.hasBody) {
                 msg.setRequestBody(wire.bodyString);
                 msg.getRequestHeader().setHeader("Content-Type", "application/x-www-form-urlencoded");
