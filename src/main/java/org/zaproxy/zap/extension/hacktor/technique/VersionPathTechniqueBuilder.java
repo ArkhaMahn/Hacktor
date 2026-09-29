@@ -17,6 +17,9 @@ public class VersionPathTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Version Path"; }
     @Override public int getOrder() { return 54; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
