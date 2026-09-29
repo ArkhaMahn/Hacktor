@@ -9,6 +9,9 @@ public class FormatSuffixTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Format Suffix"; }
     @Override public int getOrder() { return 40; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
