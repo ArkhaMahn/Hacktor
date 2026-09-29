@@ -9,6 +9,9 @@ public class ProtocolDowngradeTechniqueBuilder extends AbstractTechniqueBuilder 
     @Override public String getFamily() { return "Protocol Downgrade"; }
     @Override public int getOrder() { return 23; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.HEADER; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
