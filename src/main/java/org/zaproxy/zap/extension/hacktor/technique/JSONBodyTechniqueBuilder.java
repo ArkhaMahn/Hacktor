@@ -9,6 +9,9 @@ public class JSONBodyTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "JSON Body"; }
     @Override public int getOrder() { return 36; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.BODY; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
