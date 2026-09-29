@@ -37,6 +37,10 @@ public class PathNormalizationTechniqueBuilder extends AbstractTechniqueBuilder 
 
     @Override public int getOrder() { return 63; }
 
+
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
