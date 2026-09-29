@@ -35,6 +35,10 @@ public class RefererTrustTechniqueBuilder extends AbstractTechniqueBuilder {
 
     @Override public int getOrder() { return 61; }
 
+
+    @Override public Technique.Position getPosition() { return Technique.Position.HEADER; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
