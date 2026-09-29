@@ -9,6 +9,9 @@ public class NullByteTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Null Byte"; }
     @Override public int getOrder() { return 38; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
