@@ -9,6 +9,9 @@ public class HTTPVersionTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "HTTP Version"; }
     @Override public int getOrder() { return 21; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.REQUEST; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
