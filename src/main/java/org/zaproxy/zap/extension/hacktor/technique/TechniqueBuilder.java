@@ -10,6 +10,18 @@ public interface TechniqueBuilder {
     String getFamily();
     int getOrder();
 
+    /**
+     * The request surface every technique this builder emits targets.
+     *
+     * <p>Returning null (the {@link AbstractTechniqueBuilder} default) means the
+     * builder does not claim a single surface, either because it is mixed — a
+     * builder that writes both headers and query parameters must stamp each
+     * technique individually — or because it is a request-level family. The engine
+     * only fills in a missing position, so a per-technique value set inside
+     * {@link #build} always wins.
+     */
+    Technique.Position getPosition();
+
     class PathContext {
         public final String origPath;
         public final String basePath;
