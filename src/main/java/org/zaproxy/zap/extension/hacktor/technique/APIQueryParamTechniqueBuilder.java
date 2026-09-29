@@ -9,6 +9,9 @@ public class APIQueryParamTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "API Headers"; }
     @Override public int getOrder() { return 33; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
