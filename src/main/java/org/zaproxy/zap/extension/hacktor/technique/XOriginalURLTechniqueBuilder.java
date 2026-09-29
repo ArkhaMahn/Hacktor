@@ -9,6 +9,9 @@ public class XOriginalURLTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "X-Original URL"; }
     @Override public int getOrder() { return 46; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.HEADER; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
