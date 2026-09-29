@@ -9,6 +9,9 @@ public class PrototypePollutionTechniqueBuilder extends AbstractTechniqueBuilder
     @Override public String getFamily() { return "Prototype Pollution"; }
     @Override public int getOrder() { return 35; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
