@@ -4,6 +4,7 @@ import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PushbackInputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -50,22 +51,32 @@ public final class RawHttpSender {
      *  time (which could exceed the socket read timeout before reaching the cap). */
     private static final int CHUNK = 16 * 1024;
 
-    /** Reads up to {@code buf.length} bytes into {@code buf}, looping over partial
-     *  reads. Returns the count read, or -1 on EOF with nothing read. */
-    private static int readSome(InputStream in, byte[] buf) throws IOException {
-        int total = 0;
-        while (total < buf.length) {
-            int n = in.read(buf, total, buf.length - total);
-            if (n < 0) {
-                break;
-            }
-            total += n;
-        }
-        return total == 0 ? -1 : total;
-    }
+    /** Bounded chunk size for the header scan. Deliberately much smaller than
+     *  {@link #CHUNK} so a response whose body follows in the same TCP segment does
+     *  not pull a whole body into the header buffer just to push it back. */
+    private static final int HEAD_CHUNK = 1024;
+
+    /** Pushback capacity: must exceed {@link #HEAD_CHUNK} so the unconsumed tail of
+     *  a header read can always be handed back to the body readers. */
+    private static final int PUSHBACK = HEAD_CHUNK + 1024;
 
     private RawHttpSender() {
     }
+
+    /**
+     * Pseudo-header carrying raw, pre-serialised header lines to emit at the top
+     * of the header block. Needed for lines that ZAP's header model cannot hold
+     * verbatim — a bare token with no colon, or a value containing raw CRLF. Stripped
+     * before the rest of the headers are serialised, like the wire-path marker.
+     */
+    public static final String WIRE_HEADER_LINES = "X-Hacktor-WireHeaderLines";
+
+    /**
+     * Pseudo-header carrying a complete, pre-serialised request line. The header
+     * model upper-cases the version field, so a status line replayed as a request
+     * line would lose the case of its reason phrase. Stripped like the other markers.
+     */
+    public static final String WIRE_REQUEST_LINE = "X-Hacktor-WireRequestLine";
 
     /**
      * Sends {@code msg} over a raw socket, preserving any literal {@code #} in the
@@ -239,14 +250,21 @@ public final class RawHttpSender {
             version = "HTTP/1.1";
         }
 
-        // Some techniques need a literal path on the wire (e.g. Padding with %20,
-        // Backslash/UNC paths) that URI.setPath() would re-encode. They mark the
-        // path with a request attribute (non-header) and we honour it here, then
-        // strip it before serialising the rest of the headers.
+        // Some techniques need an exact request-target on the wire that a URI object
+        // would re-encode or refuse: literal %XX padding (Padding), backslash/UNC
+        // paths, and the non-origin-form targets produced by the character sweeps
+        // (";admin", "\admin", a control byte before the leading slash). They mark the
+        // path with a pseudo-header and we honour it here, then strip it before
+        // serialising the rest of the headers.
         String wirePath = msg.getRequestHeader().getHeader("X-Hacktor-WirePath");
 
+        String wireRequestLine = msg.getRequestHeader().getHeader(WIRE_REQUEST_LINE);
+
         String target;
-        if (wirePath != null && !wirePath.isEmpty()) {
+        if (wireRequestLine != null && !wireRequestLine.isEmpty()) {
+            // The line is fixed verbatim, so the request-target is not resolved at all.
+            target = null;
+        } else if (wirePath != null && !wirePath.isEmpty()) {
             target = wirePath;
         } else {
             target = buildRequestTarget(uri, secure);
@@ -255,7 +273,33 @@ public final class RawHttpSender {
             }
         }
 
-        sb.append(method).append(' ').append(target).append(' ').append(version).append("\r\n");
+        if (target == null) {
+            sb.append(wireRequestLine).append("\r\n");
+        } else {
+            sb.append(method).append(' ').append(target).append(' ').append(version).append("\r\n");
+        }
+
+        // Some probes need a header line that is not a well-formed "name: value"
+        // pair: a bare token line with no colon at all, or a line whose value
+        // carries raw CRLF. ZAP's header model rewrites both ("x" + no colon
+        // becomes "x : "), so those lines travel in a pseudo-header and are
+        // prepended to the block verbatim.
+        String wireLines = msg.getRequestHeader().getHeader(WIRE_HEADER_LINES);
+        if (wireLines != null && !wireLines.isEmpty()) {
+            // Stashed NUL-joined so the marker occupies exactly one header line and
+            // the prefix strip below removes all of it; unpacked to CRLF here.
+            StringBuilder packed = new StringBuilder(wireLines.length() + 8);
+            for (int i = 0; i < wireLines.length(); i++) {
+                char ch = wireLines.charAt(i);
+                if (ch == '\u0000') {
+                    packed.append("\r\n");
+                } else {
+                    packed.append(ch);
+                }
+            }
+            wireLines = packed.toString();
+
+        }
 
         String headers = msg.getRequestHeader().getHeadersAsString();
         if (headers != null) {
@@ -267,9 +311,24 @@ public final class RawHttpSender {
                 block = stripHeaderLine(block, "X-Hacktor-WirePath:");
                 if (block == null) block = "";
             }
+            block = stripHeaderLine(block, "X-Hacktor-WireRequestLine:");
+            if (block == null) block = "";
+            block = stripHeaderLine(block, "X-Hacktor-WireHeaderLines:");
+            if (block == null) block = "";
             block = stripHeaderLine(block, "X-Hacktor-Timing:");
             if (block == null) block = "";
+            if (wireLines != null && !wireLines.isEmpty()) {
+                // Only join with a fresh CRLF when the caller did not already end the
+                // last raw line with one. A technique that rebuilds a whole header
+                // block line-by-line (header-order, colon-space suffix) ends its string
+                // with CRLF, and appending another would emit a blank line that closes
+                // the header block early.
+                String sep = wireLines.endsWith("\r\n") ? "" : "\r\n";
+                block = wireLines + sep + block;
+            }
             sb.append(block);
+        } else if (wireLines != null && !wireLines.isEmpty()) {
+            sb.append(wireLines).append("\r\n");
         }
         if (sb.charAt(sb.length() - 1) != '\n') {
             sb.append("\r\n");
@@ -361,22 +420,33 @@ public final class RawHttpSender {
     }
 
     private static byte[] readResponse(InputStream in) throws IOException {
-        // Read status line + headers, in chunks so large headers cannot stall
-        // the socket timeout while being read one byte at a time.
+        // A blocking stream's read() returns as soon as at least one byte is
+        // available, so the header scan must never try to fill a whole buffer. Two
+        // bugs come from doing that: it blocks for the full socket timeout on every
+        // response, and it over-consumes body bytes that arrived in the same TCP
+        // segment as the headers (which are then dropped, silently emptying the
+        // body of every small response). Read in bounded chunks and push the
+        // unconsumed tail back so the body readers still see it.
+        PushbackInputStream pin = new PushbackInputStream(in, PUSHBACK);
         StringBuilder head = new StringBuilder(1024);
-        byte[] buf = new byte[CHUNK];
+        byte[] buf = new byte[HEAD_CHUNK];
         boolean seenHeaderEnd = false;
         while (!seenHeaderEnd) {
-            int n = readSome(in, buf);
-            if (n <= 0) {
-                return head.length() == 0 ? null
-                    : head.toString().getBytes(StandardCharsets.ISO_8859_1);
+            int n = pin.read(buf, 0, buf.length);
+            if (n < 0) {
+                // EOF with no bytes at all: nothing was sent.
+                if (head.length() == 0) {
+                    return null;
+                }
+                // Headers never terminated (truncated response): treat what we
+                // have as the whole response so the read always terminates.
+                break;
             }
-            for (int i = 0; i < n && !seenHeaderEnd; i++) {
+            int consumed = 0;
+            for (int i = 0; i < n; i++) {
                 head.append((char) (buf[i] & 0xFF));
+                consumed = i + 1;
                 if (head.length() >= MAX_RESPONSE_HEADER) {
-                    // Header grew past the cap: stop reading headers and treat what we
-                    // have as the whole (truncated) response so the read terminates.
                     seenHeaderEnd = true;
                     break;
                 }
@@ -387,8 +457,12 @@ public final class RawHttpSender {
                         && head.charAt(L - 3) == '\n'
                         && head.charAt(L - 4) == '\r') {
                         seenHeaderEnd = true;
+                        break;
                     }
                 }
+            }
+            if (consumed < n) {
+                pin.unread(buf, consumed, n - consumed);
             }
         }
         String headerText = head.toString();
@@ -399,17 +473,19 @@ public final class RawHttpSender {
 
         StringBuilder body;
         if (chunked) {
-            body = readChunked(in);
+            body = readChunked(pin);
         } else if (len >= 0) {
-            body = readFixed(in, len);
+            body = readFixed(pin, len);
         } else {
             // No framing: read until EOF (legacy 1.0 style), capped.
             body = new StringBuilder();
+            byte[] bodyBuf = new byte[CHUNK];
             int n;
-            while (body.length() < MAX_RESPONSE_BODY && (n = readSome(in, buf)) > 0) {
-                int take = Math.min(n, MAX_RESPONSE_BODY - body.length());
-                for (int i = 0; i < take; i++) {
-                    body.append((char) (buf[i] & 0xFF));
+            while (body.length() < MAX_RESPONSE_BODY
+                && (n = pin.read(bodyBuf, 0,
+                    (int) Math.min(bodyBuf.length, MAX_RESPONSE_BODY - body.length()))) > 0) {
+                for (int i = 0; i < n; i++) {
+                    body.append((char) (bodyBuf[i] & 0xFF));
                 }
             }
         }
@@ -422,15 +498,17 @@ public final class RawHttpSender {
         long remaining = limit;
         byte[] buf = new byte[CHUNK];
         while (remaining > 0) {
-            int n = readSome(in, buf);
-            if (n <= 0) {
+            // Ask only for what is still owed, and take a single read: a short read
+            // is normal and must not be mistaken for end-of-body.
+            int want = (int) Math.min(remaining, buf.length);
+            int n = in.read(buf, 0, want);
+            if (n < 0) {
                 break;
             }
-            int take = (int) Math.min(n, remaining);
-            for (int i = 0; i < take; i++) {
+            for (int i = 0; i < n; i++) {
                 sb.append((char) (buf[i] & 0xFF));
             }
-            remaining -= take;
+            remaining -= n;
         }
         return sb;
     }
@@ -467,15 +545,15 @@ public final class RawHttpSender {
             byte[] buf = new byte[CHUNK];
             long have = 0;
             while (have < toRead) {
-                int n = readSome(in, buf);
-                if (n <= 0) {
+                int want = (int) Math.min(toRead - have, buf.length);
+                int n = in.read(buf, 0, want);
+                if (n < 0) {
                     return sb;
                 }
-                int take = (int) Math.min(n, toRead - have);
-                for (int i = 0; i < take; i++) {
+                for (int i = 0; i < n; i++) {
                     sb.append((char) (buf[i] & 0xFF));
                 }
-                have += take;
+                have += n;
             }
             if (sb.length() >= MAX_RESPONSE_BODY) {
                 break;
