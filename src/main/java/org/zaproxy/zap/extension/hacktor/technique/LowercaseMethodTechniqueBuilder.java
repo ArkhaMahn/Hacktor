@@ -34,6 +34,10 @@ public class LowercaseMethodTechniqueBuilder extends AbstractTechniqueBuilder {
 
     @Override public int getOrder() { return 60; }
 
+
+    @Override public Technique.Position getPosition() { return Technique.Position.REQUEST; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
