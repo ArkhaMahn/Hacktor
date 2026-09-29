@@ -18,6 +18,14 @@ public final class Result {
     private final boolean similarLength;
     private final String bodySample;
     private final HttpMessage message;
+    /**
+     * The exact bytes that were written to the socket, captured at send time. Null
+     * when the request was not sent over the raw socket. This is authoritative in a
+     * way the stored {@link #message} is not: the header model cannot hold a
+     * colon-less line, an obs-fold, a bare CR or a literal '#' in the
+     * request-target, so re-serialising the message can disagree with the wire.
+     */
+    private final byte[] wireBytes;
     /** ISO-8601 timestamp of when the request was sent, or "-" when unknown. */
     private final String reqTime;
     /** ISO-8601 timestamp of when the response was received, or "-" when unknown. */
@@ -51,6 +59,24 @@ public final class Result {
             HttpMessage message,
             String reqTime,
             String resTime) {
+        this(technique, path, verdict, baselineStatus, status, baselineLength, length,
+            similarLength, bodySample, message, reqTime, resTime, null);
+    }
+
+    public Result(
+            Technique technique,
+            String path,
+            Technique.Verdict verdict,
+            int baselineStatus,
+            int status,
+            int baselineLength,
+            int length,
+            boolean similarLength,
+            String bodySample,
+            HttpMessage message,
+            String reqTime,
+            String resTime,
+            byte[] wireBytes) {
         this.technique = technique;
         this.path = path;
         this.verdict = verdict;
@@ -63,6 +89,7 @@ public final class Result {
         this.message = message;
         this.reqTime = reqTime;
         this.resTime = resTime;
+        this.wireBytes = wireBytes == null ? null : wireBytes.clone();
     }
 
     public Technique getTechnique() { return technique; }
@@ -78,6 +105,9 @@ public final class Result {
     public boolean isSimilarLength() { return similarLength; }
     public String getBodySample() { return bodySample; }
     public HttpMessage getMessage() { return message; }
+    /** Defensive copy of the exact wire bytes, or null if not raw-sent. */
+    public byte[] getWireBytes() { return wireBytes == null ? null : wireBytes.clone(); }
+    public boolean hasWireBytes() { return wireBytes != null; }
     public String getReqTime() { return reqTime; }
     public String getResTime() { return resTime; }
 }
