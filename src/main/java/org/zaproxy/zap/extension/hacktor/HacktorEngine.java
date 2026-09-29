@@ -2,6 +2,7 @@ package org.zaproxy.zap.extension.hacktor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -209,7 +210,17 @@ public class HacktorEngine {
             "Backslash Path", "X-Forwarded Prefix", "Mid-Path Dot",
             "Version Path", "TE/CL Framing", "Lowercase Method",
             "Referer Trust", "Hop-by-Hop", "Path Norm", "WAF Encoding",
-            "Body Params", "Inference", "Scheme Tampering", "Raw Aberrations"
+            "Body Params", "Inference", "Scheme Tampering", "Raw Aberrations",
+            "Byte Fuzz", "Slash Payload", "Minimal Request",
+            // Desync families ported from PortSwigger's http-terminator.
+            "Desync Polyglot", "Parser Reuse", "Content-Range Desync",
+            "Response-as-Request", "Permutation Atoms",
+            // Insertion-point families ported from PortSwigger's
+            // backslash-powered-scanner.
+            "Backslash Decode", "Function Injection", "Magic Value",
+            "Function Hijacking", "Escape Sequence", "Comment Injection",
+            "Order By Injection", "HTML Tag Fuzzing", "HPP Injection",
+            "JSON Injection"
         };
         for (int i = 0; i < order.length; i++) {
             FAMILIES.add(order[i]);
@@ -581,6 +592,47 @@ public class HacktorEngine {
             return false;
         }
     }
+    /**
+     * Declared surface for the inline {@code build*Techniques} groups below. Those
+     * predate the {@link TechniqueBuilder} contract and so carry no position of
+     * their own; keying the stamp by family keeps each group a single entry even
+     * where it emits a dozen variants. Every group writes one surface only — the
+     * groups that legitimately span two (Method Override, Permutation Atoms,
+     * Inference) are builders, or are already stamped per technique.
+     */
+    private static final Map<String, Technique.Position> LEGACY_FAMILY_POSITIONS;
+
+    static {
+        Map<String, Technique.Position> m = new LinkedHashMap<>();
+        m.put("Case", Technique.Position.URL);
+        m.put("Encoding", Technique.Position.URL);
+        m.put("Encoding Chain", Technique.Position.URL);
+        m.put("Leading Slash", Technique.Position.URL);
+        m.put("Query Params", Technique.Position.URL);
+        m.put("SegmentCase", Technique.Position.URL);
+        m.put("SegmentDot", Technique.Position.URL);
+        m.put("SegmentLetter", Technique.Position.URL);
+        m.put("SegmentMix", Technique.Position.URL);
+        m.put("Semicolon", Technique.Position.URL);
+        m.put("Suffix", Technique.Position.URL);
+        m.put("Traversal", Technique.Position.URL);
+        m.put("Content-Type", Technique.Position.HEADER);
+        m.put("Cookies", Technique.Position.HEADER);
+        m.put("Duplicate Headers", Technique.Position.HEADER);
+        m.put("Headers", Technique.Position.HEADER);
+        m.put("IP Notation", Technique.Position.HEADER);
+        m.put("Methods", Technique.Position.REQUEST);
+        LEGACY_FAMILY_POSITIONS = Collections.unmodifiableMap(m);
+    }
+
+    private static void stampLegacyFamilyPositions(List<Technique> techs) {
+        for (Technique t : techs) {
+            if (t.hasPosition()) continue;
+            Technique.Position p = LEGACY_FAMILY_POSITIONS.get(t.getFamily());
+            if (p != null) t.setPosition(p);
+        }
+    }
+
     private static String currentPath(HttpMessage msg) {
         URI uri = msg.getRequestHeader().getURI();
         if (uri == null) return "";
@@ -697,6 +749,14 @@ public class HacktorEngine {
         new org.zaproxy.zap.extension.hacktor.technique.RefererTrustTechniqueBuilder(),
         new org.zaproxy.zap.extension.hacktor.technique.HopByHopTechniqueBuilder(),
         new org.zaproxy.zap.extension.hacktor.technique.PathNormalizationTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.ByteFuzzTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.SlashPayloadTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.MinimalRequestTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.DesyncPolyglotTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.ParserReuseTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.ContentRangeDesyncTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.ResponseAsRequestTechniqueBuilder(),
+        new org.zaproxy.zap.extension.hacktor.technique.PermutationAtomTechniqueBuilder(),
     };
 
     // ─── Technique builder ──────────────────────────────────────────────
@@ -732,12 +792,25 @@ public class HacktorEngine {
         buildContentTypeTechniques(techs, ctx);
         buildLeadingSlashTechniques(techs, setPath, ctx);
         buildEncodingChainTechniques(techs, setPath, ctx);
+        stampLegacyFamilyPositions(techs);
         TechniqueBuilder.PathContext builderCtx =
             new TechniqueBuilder.PathContext(
                 ctx.origPath, ctx.basePath, ctx.origQuery, ctx.baseClean,
                 ctx.rawSegments, ctx.lastSeg, ctx.parent);
         for (TechniqueBuilder b : TECHNIQUE_BUILDERS) {
+            int from = techs.size();
             b.build(techs, setPath, builderCtx);
+            // Stamp the builder's declared surface onto anything it did not place
+            // itself. A mixed builder (Method Override writes both headers and
+            // query parameters) sets a position per technique inside build(), and
+            // that per-technique value wins because only null is filled in here.
+            Technique.Position bp = b.getPosition();
+            if (bp != null) {
+                for (int i = from; i < techs.size(); i++) {
+                    Technique t = techs.get(i);
+                    if (!t.hasPosition()) t.setPosition(bp);
+                }
+            }
         }
 
         buildVulnClassTechniques(techs, ctx);
@@ -931,6 +1004,7 @@ public class HacktorEngine {
                 return c;
             });
         t.setNeedsRawWire(true);
+        t.setPosition(Technique.Position.URL);
         techs.add(t);
     }
 
@@ -968,6 +1042,7 @@ public class HacktorEngine {
                 return c;
             });
         t.setNeedsRawWire(true);
+        t.setPosition(Technique.Position.HEADER);
         techs.add(t);
 
         // Per-value: one technique per semicolon-separated value × operation.
@@ -1010,6 +1085,7 @@ public class HacktorEngine {
                                 return c2;
                             });
                         tVal.setNeedsRawWire(true);
+                        tVal.setPosition(Technique.Position.HEADER);
                         techs.add(tVal);
                     }
                 }
@@ -1052,6 +1128,7 @@ public class HacktorEngine {
                 return c;
             });
         t.setNeedsRawWire(true);
+        t.setPosition(Technique.Position.BODY);
         techs.add(t);
     }
 
@@ -1110,6 +1187,7 @@ public class HacktorEngine {
             return c;
         });
         t.setTier(tier);
+        t.setPosition(VulnCatalog.positionForPlacement(placement));
         return t;
     }
 
@@ -1214,6 +1292,7 @@ public class HacktorEngine {
             });
             tech.setTier(tier);
             if (!"HDR".equals(placement)) tech.setNeedsRawWire(true);
+            tech.setPosition(VulnCatalog.positionForPlacement(placement));
             techs.add(tech);
         }
     }
@@ -1264,14 +1343,16 @@ public class HacktorEngine {
             + " — payload: " + payload;
         final BodyParams.Param target = p;
         final String mode = op;
-        techs.add(new Technique("Body Params", label, desc, base -> {
+        Technique t = new Technique("Body Params", label, desc, base -> {
             HttpMessage c = base.cloneAll();
             String next = BodyParams.rewrite(c, target, payload, mode);
             if (next == null) next = "";
             c.setRequestBody(next);
             c.getRequestHeader().setContentLength(next.length());
             return c;
-        }));
+        });
+        t.setPosition(Technique.Position.BODY);
+        techs.add(t);
     }
 
     // ─── 1. HTTP Methods ────────────────────────────────────────────────
@@ -1834,6 +1915,31 @@ public class HacktorEngine {
                 "Add header " + h[0] + ": " + h[1],
                 base -> { HttpMessage c = cloneMsg(base); addHeader(c, hn, hv); return c; }));
         }
+
+        // From the 403 Bypasser's "header payloads.txt", which is otherwise fully
+        // covered above and in Auth Forwarding. Two of its eleven entries are not:
+        //
+        //  - "Redirect: 127.0.0.1" — a redirect-target trust check; no proxy or
+        //    framework ships this header, so it only reaches an application that
+        //    reads it itself.
+        //  - "Referer: 127.0.0.1" — a bare IP instead of a URL. Every probe in
+        //    Referer Trust sends a full URL, so an application that greps the
+        //    Referer value for an IP (rather than parsing it) is only reachable
+        //    with this form.
+        Technique redirectLoopback = new Technique("Headers", "Hdr:Redirect=127.0.0.1",
+            "Add header Redirect: 127.0.0.1 (403 Bypasser header payload)",
+            base -> { HttpMessage c = cloneMsg(base);
+                addHeader(c, "Redirect", "127.0.0.1"); return c; });
+        redirectLoopback.setTier(VulnCatalog.Tier.RARE);
+        techs.add(redirectLoopback);
+
+        Technique bareIpReferer = new Technique("Headers", "Hdr:Referer=127.0.0.1",
+            "Add header Referer: 127.0.0.1 - a bare IP rather than a URL "
+                + "(403 Bypasser header payload)",
+            base -> { HttpMessage c = cloneMsg(base);
+                addHeader(c, "Referer", "127.0.0.1"); return c; });
+        bareIpReferer.setTier(VulnCatalog.Tier.RARE);
+        techs.add(bareIpReferer);
     }
 
     // ─── 10. Duplicate headers ──────────────────────────────────────────
@@ -2196,9 +2302,16 @@ public class HacktorEngine {
         // proxy; any failure falls back to the normal sender. The UI may also force
         // the raw socket for every probe ("Raw wire for ambiguous requests").
         boolean rawWire = forceRawWire || tech.needsRawWire() || hasLiteralFragment(mutated);
+        byte[] sentBytes = null;
         try {
             if (rawWire) {
+                // Capture what we are about to write, not what the model would
+                // re-serialise to afterwards: the wire markers (fixed request line,
+                // colon-less header lines) are stripped from the message below, and
+                // a literal '#' target never survives a model round-trip.
+                sentBytes = RawHttpSender.toWireBytes(mutated);
                 if (!RawHttpSender.send(mutated, soTimeoutSecs)) {
+                    sentBytes = null;
                     sendNormal(mutated, sender);
                 }
             } else {
@@ -2235,6 +2348,16 @@ public class HacktorEngine {
         int status = mutated.getResponseHeader().getStatusCode();
         String body = mutated.getResponseBody().toString();
         int len = body.length();
+
+        // A technique can declare that some answers are a parse failure rather than a
+        // finding. The URL Fuzzer's character sweep does exactly that: 400/404 means
+        // the front end refused to parse the fuzzed request-target at all, and an
+        // empty body means the server was still waiting for the rest of a request line
+        // that a bare CR/LF had cut in half. Neither is a bypass, so drop them instead
+        // of reporting them.
+        if (tech.discardsStatus(status)) return null;
+        if (tech.isDiscardEmptyBody() && len == 0) return null;
+
         boolean isErr = looksLikeErrorPage(status, body, len, baselineLen);
         boolean realChange = (status != baselineStatus);
         Technique.Verdict verdict = classifyVerdict(status, isErr, realChange);
@@ -2257,9 +2380,15 @@ public class HacktorEngine {
         // linger on the stored message: the request viewer, curl builder, CSV export
         // and a resend would otherwise surface (or even transmit) it as a real header.
         try { mutated.getRequestHeader().setHeader("X-Hacktor-WirePath", null); } catch (Exception ignored) {}
+        // Same for the other two wire markers: they are transport side channels, so
+        // the parsed viewer, the curl builder, CSV export and a resend must never see
+        // them as if they were real request headers. The exact bytes are already
+        // captured in sentBytes, so nothing is lost.
+        try { mutated.getRequestHeader().setHeader(RawHttpSender.WIRE_REQUEST_LINE, null); } catch (Exception ignored) {}
+        try { mutated.getRequestHeader().setHeader(RawHttpSender.WIRE_HEADER_LINES, null); } catch (Exception ignored) {}
         String sample = len > 500 ? body.substring(0, 500) : body;
         return new Result(tech, path, verdict, baselineStatus, status, baselineLen, len, isErr,
-            sample, mutated, reqTime, resTime);
+            sample, mutated, reqTime, resTime, sentBytes);
     }
 
     // ─── Run all enabled techniques ─────────────────────────────────────
