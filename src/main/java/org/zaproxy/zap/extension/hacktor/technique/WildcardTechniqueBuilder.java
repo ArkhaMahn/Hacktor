@@ -9,6 +9,9 @@ public class WildcardTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Wildcard"; }
     @Override public int getOrder() { return 42; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.URL; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
