@@ -9,6 +9,9 @@ public class IPComboTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "IP Combo"; }
     @Override public int getOrder() { return 49; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.HEADER; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
