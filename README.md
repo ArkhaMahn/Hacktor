@@ -1,6 +1,6 @@
 # Hacktor
 
-### A ZAP 2.17.0 add-on for HTTP access-control bypass and OAuth tampering — 7800+ techniques across 40+ families for 401/403 bypass, auth/authz probing, HTTP smuggling, cache poisoning, injection probing and OAuth 1.0a/2.0/OIDC tampering.
+### A ZAP 2.17.0 add-on for HTTP access-control bypass and OAuth tampering — 15900+ techniques across 104 families for 401/403 bypass, auth/authz probing, HTTP smuggling, cache poisoning, injection probing and OAuth 1.0a/2.0/OIDC tampering.
 
 [![license](https://img.shields.io/badge/license-MIT-3DA639)](/ArkhaMahn/Hacktor/blob/main/LICENSE) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-B5BAB6)](https://github.com/ArkhaMahn/Hacktor/issues)
 
@@ -64,7 +64,7 @@ Point it at any HTTP request from the Sites tree, History or Search (right-click
 PHASE 1 — baseline
    GET /admin/panel HTTP/1.1  ->  401 (1234 bytes)
 
-PHASE 2 — 7800+ mutations, each compared to the baseline
+PHASE 2 — 15900+ mutations, each compared to the baseline
    "Path Normalization | Trailing '.', double slash"   -> 200  (8124 bytes)  CANDIDATE BYPASS
    "X-Original URL    | /admin/panel via header"       -> 200  (8122 bytes)  CANDIDATE BYPASS
    "Host Header       | localhost"                     -> 403  (1160 bytes)  Suppressed (error page)
@@ -75,8 +75,8 @@ Hacktor is **active by design** — it is a live probing/verification tool, so u
 
 Feature | Description
 --- | ---
-7800+ techniques | catalog × placements × tiers × WAF encodings × body params × OOB templates, generated per-target
-40+ families | 23 injection/proxy-trust catalog classes + 40+ request-mutation technique families
+15900+ techniques | catalog × placements × tiers × WAF encodings × body params × OOB templates, generated per-target
+104 families | 33 injection/proxy-trust catalog classes + 71 request-mutation technique families
 Classic/Rare/Novel tiers | gate by technique obscurity; Novel adds segment-prepend, query-append and body-param injection
 Granular control | per-row and per-family enable/disable, custom techniques, duplicate/edit/remove
 False-positive suppression | error-page and length-ratio heuristics classify 200/302/404 "bypasses" that are really branded blocks
@@ -89,7 +89,7 @@ Shared knobs | threads, rate limit, timeout, max probes, exponential backoff on 
 ## What it does
 
 - **Access-control (401/403) bypass probing** — for a base request it generates and sends thousands of one-variable mutations targeting the ways frameworks and proxies decide "this request is allowed": HTTP methods and malformed verbs, path normalization and segment mutations, header case/confusion/duplication, IPv4/IPv6/host/authorization tampering, encoding chains, fragments, homoglyphs, padding, matrix parameters, backslash/UNC paths, X-Original-URL / X-Forwarded-* prefix tricks, HTTP/2 pseudo-headers, TE/CL and request-smuggling framing, hop-by-hop header suppression, referer-trust games, scheme tampering and raw-wire aberrations.
-- **Injection probing** — 23 vulnerability classes (SQLi, XSS, command injection, Shellshock, path traversal, SSRF, SSTI, NoSQLi, open redirect, XXE, LDAPi, Log4Shell, prototype pollution, insecure deserialization, CRLF, SSI, RFI/LFI, CSV injection, and the proxy/IP-trust header families) are fired across 8 request placements — headers, User-Agent, each path segment (pre/post), root path, root query, existing query value/append, and real body parameters parsed out of form, multipart, JSON and XML bodies.
+- **Injection probing** — 33 vulnerability classes (SQLi, XSS, command injection, Shellshock, path traversal, SSRF, SSTI, NoSQLi, open redirect, XXE, LDAPi, Log4Shell, prototype pollution, insecure deserialization, CRLF, SSI, RFI/LFI, CSV injection, the proxy/IP-trust header families, and ten classes ported from the PortSwigger **Backslash Powered Scanner** — backslash/URL decode, function injection, magic values, function hijacking, escape sequences, comment injection, ORDER BY injection, HTML tag fuzzing, HPP and JSON injection) are fired across 8 request placements — headers, User-Agent, each path segment (pre/post), root path, root query, existing query value/append, and real body parameters parsed out of form, multipart, JSON and XML bodies.
 - **WAF-beating encoding ladders** — every catalogue payload is re-emitted through URL×1/×2/×3, Base64, URL-safe Base64, ASCII hex, HTML entities and overlong UTF-8, so a WAF that decodes once and an application that decodes twice diverge.
 - **Out-of-band proof** — command-execution, XXE, SSRF and Log4Shell templates that point `{{OOB}}` back at your callback server; a hit proves server-side interpretation of the payload.
 - **OAuth tampering** — a complete second lab (TamperOauth) that parses an OAuth request, identifies the endpoint and flow, exposes every query/body parameter and value (with per-value encoding and canonicalization), and runs 122 Classic/Rare/Novel OAuth techniques: redirect_uri confusion, PKCE downgrades, grant/response-type switches, state & nonce replay, consent and session forcing, client-identity attacks and OAuth 1.0a signature games.
@@ -108,13 +108,13 @@ Everything funnels through one entry point: `HacktorEngine.buildTechniques(HttpM
         ┌──────────────┬───────────┬──────────────┐
         ▼              ▼           ▼              ▼
   16 inline       44 technique    VulnCatalog     WAF encoders
-  families        builders        23 classes      URL×1/2/3, B64,
+  families        builders        33 classes      URL×1/2/3, B64,
   (Methods,       (Fragment,      × tiers ×       B64U, Hex, HTML,
    Case, Path,     Smuggling,     8 placements    Overlong UTF-8
    Headers, …)     Raw Aberr., …)                 + OOB templates
         └──────────────┬───────────┬──────────────┘
                        ▼
-             List<Technique>  (7800+ on a typical
+             List<Technique>  (15900+ on a typical
                each: family, label, tier, needsRawWire,
                enabled, compiled apply(HttpMessage))
                        │  tier gate (Classic/Rare/Novel)
@@ -150,7 +150,7 @@ The OAuth lab mirrors this architecture with its own prebuilt catalogue: `OauthE
 
 ### Techniques, families and tiers
 
-A *technique* is one atomic, compilable mutation of the base request. Techniques are grouped by *family* (a named category in the Techniques tab) and graded into three *tiers*:
+A *technique* is one atomic, compilable mutation of the base request. Techniques are grouped by *family* (a named category in the Techniques tab), carry the *position* of the surface they write to (see [The Techniques tab](#the-techniques-tab)), and are graded into three *tiers*:
 
 | Tier | Meaning |
 | --- | --- |
@@ -158,12 +158,14 @@ A *technique* is one atomic, compilable mutation of the base request. Techniques
 | **Rare** | unusual encodings and less common sinks — inline-obfuscated encodings, sibling-subdomain referers, alternate ports |
 | **Novel** | unexpected-by-server forms — double/triple-encoded layers, overlong UTF-8, Tomcat `;jsessionid`, fullwidth/division slashes, cloud-metadata SSRF, CRLF-folding |
 
-The catalogue multiplies: 308 tiered injection payloads across 23 classes × 8 placements (6 for Classic, 8 once Novel is enabled) × every detected path segment × WAF encodings × real body parameters × 31 OOB templates — so the exact count is per-target and typically lands in the thousands (hence "7800+ techniques across 40+ families"). A handful of emblematic families:
+The catalogue multiplies: 465 tiered injection payloads across 33 classes × 8 placements (6 for Classic, 8 once Novel is enabled) × every detected path segment × WAF encodings × real body parameters × 34 OOB templates — so the exact count is per-target and typically lands in the thousands (hence "15900+ techniques across 104 families"). A handful of emblematic families:
 
 - **Path & request-line**: Path Normalization (dot/encoded/overlong/mid-dot/trailing-dot, `;jsessionid`), Path Append/Format Suffix/Version Path/Segment Dup/Wildcard/Matrix Params, Absolute URI, Null Byte, Backslash (UNC) paths, Padding (`%20`), Unicode Zero-Width, Homoglyphs, HTTP Version, Request Line (asterisk/authority/path-only/no-version/double-space), Lowercase Method.
 - **Headers**: Header Case, Header Confusion (duplicate CL, CL+TE stacking), Header Normalization, API Headers, Connection/Hop-by-Hop suppression, Host Header, X-Original URL, X-Forwarded Prefix, Referer Trust, Authorization / Auth Forwarding, Cookies, Content-Type, obs-fold aberrations.
 - **Framing & wire**: HTTP/2 pseudo-headers (`:method`/`:path`/`:authority`/`:scheme`/`:protocol`, case and duplicate tricks), TE/CL and Transfer-Encoding framing, Request Smuggling (`SMT_TE`, `SMT_CL`, `SMT_TE_CL`, CL:0 bodies), Scheme Tampering (h2c/websocket/SPDY upgrade), Raw Aberrations (PRI preface, NUL header names, whitespace methods).
 - **Semantics**: Prototype Pollution, JSON Body, Method Override, IP Combo, Fragment, Segment Dot/Case/Mix/Letter variants, encoding chains, WAF encoding, Body Params, Inference (problematic-character probes across every placement).
+- **Reference-port fuzzers**: Byte Fuzz (every byte `0x00..0xFE` in each effective path position, plus a bounded Novel two-byte ladder — ported from PortSwigger's `url-fuzzer-401-403-bypass`), Slash Payload (the 13 payloads `%09 %20 %23 %2e %2f . ; ..; ;%09 ;%09.. ;%09..; ;%2f.. *` prepended, appended and spliced around every `/` — ported from `403-bypasser`), and Minimal Request (headerless HTTP/1.1 and HTTP/1.0, bare GET, and POST with a duplicate `Content-Length: 0` — ported from `403-bypasser`). Byte Fuzz and Slash Payload are flagged `needsRawWire` so control characters, NULs and raw `;`-matrices reach the server byte-for-byte; Byte Fuzz also discards `400`/`404` and empty-body replies, because a garbage request-line byte almost never produces a meaningful verdict.
+- **Reference-port smuggling corpora**: five desync families replay byte-exact payloads from PortSwigger's **http-request-smuggler** research: **Response-as-Request** (17 server responses replayed as requests, plus a `204` extension — including HTTP/0.9-style bodies, `101` upgrades, pipelined sandwiches and `1xx` continuations), **Parser Reuse** (24 parser-confusion requests: folded headers, bare `x ` lines, `AS_DECLARED`, header-stripping `Connection` hints and a 4096-byte `1xx` padding line), **Content-Range Desync** (six `Content-Range`/`X-Http2` requests), **Permutation Atoms** (15 single-mutation atomics: `Expect`/`Max-Forwards`/`X-Http2` headers, four path substitutions, the semicolon and colon-space header suffixes, header reordering, and the four framing atoms — chunk-encoded body with `Content-Length` retained, chunk-encoded with it removed, `Content-Length` swapped for `Transfer-Encoding`, and `Content-Length` stripped) and **Desync Polyglot** (13 zero-`Content-Length` and 13 EOF-terminated multi-message payloads). All 90 wire bodies are compared byte-for-byte against the upstream corpus; the only intentional deviations are documented in the builders.
 
 ### Verdicts and false-positive suppression
 
@@ -203,7 +205,7 @@ When an OOB URL is configured (Tools → … → Target tab → **Out-of-Band Ca
 
 ### The injection catalogue
 
-`VulnCatalog` is the shared payload store (23 classes, 308 tiered payloads + 31 OOB templates), drawn from common bypass sets and the ProjectDiscovery nuclei-templates repository:
+`VulnCatalog` is the shared payload store (33 classes, 465 tiered payloads + 34 OOB templates), drawn from common bypass sets and the ProjectDiscovery nuclei-templates repository:
 
 | Class | Default header | Sample payloads |
 | --- | --- | --- |
@@ -309,11 +311,25 @@ A paste-a-URL OAuth lab: **Detect** parses the URL and shows the endpoint and fl
 
 ### The Techniques tab
 
-The full catalogue as a five-column table (**On / Category / Technique / Tier / Description**), filtered by injection class, free-text across All/Label/Family/Description, plus "Custom only". A per-family checkbox strip at the top toggles whole families and shows live enabled counts. The row buttons **Add Custom**, **Duplicate**, **Edit**, **Remove** manage the catalogue, and **Enable All / Disable All / Invert** sweep it. Technique toggles survive rebuilds (persisted to `hacktor.famOn/.famOff/.rowsOn/.rowsOff`).
+The full catalogue as a six-column table (**On / Category / Position / Technique / Tier / Description**), filtered by injection class and by **payload position**, free-text across All/Label/Family/Description/Position, plus "Custom only". A per-family checkbox strip at the top toggles whole families and shows live enabled counts. The row buttons **Add Custom**, **Duplicate**, **Edit**, **Remove** manage the catalogue, and **Enable All / Disable All / Invert** sweep it. Technique toggles survive rebuilds (persisted to `hacktor.famOn/.famOff/.rowsOn/.rowsOff`), as does the position filter.
+
+Every technique also declares the *surface* it writes to, shown in the **Position** column and selectable from the position filter:
+
+| Position | Covers |
+| --- | --- |
+| **URL** | the request-target — path segments, root path, root query, query values |
+| **Header** | a request header — its value, name, casing, duplication or ordering |
+| **Body** | the message body, including parsed body parameters |
+| **Request** | request line, method, HTTP version, framing, or a whole-request replay |
+
+Most families write a single surface, but several are deliberately mixed because that is the whole point of the probe: **Method Override** writes both header and query overrides (the same logical attack, two carriers), **Inference** maps each problematic character across URL, header and body simultaneously, and **Permutation Atoms** pairs path mutations with header mutations and framing mutations. `Request` is a separate bucket rather than a fourth "location" so that narrowing to **Header**, **Body** or **URL** does not hide method, TE/CL and HTTP-version probes that no payload is injected into.
+
+**Enable All / Disable All / Invert** sweep the rows currently in view, so a filtered sweep never silently re-enables the thousands of techniques you just filtered out — the log line and family checkboxes say so when a filter is narrowing the action. (Per-row toggles, the per-family strip and the Advanced-tab tier gates are unaffected: those are explicit, individually-addressed controls.) Position is a *view* classification and is not a claim that one surface is more dangerous than another. Custom techniques derive their position from the type you pick in the dialog (*Path Replacement* → URL, *Header Override* → Header, *Placement Probe* → whatever placement you selected), and re-derive it if you edit them later.
+
 
 ### The Results tab
 
-Each probe is one row — **# / Category / Technique / Path / Status / Length / Base / Verdict / Req ms / Res ms** — filterable by text and by **Candidates only** / **Errors only**, and sortable so `CANDIDATE` verdicts float to the top. Selecting a row loads its stored request/response into the embedded ZAP viewers. Summary line `Candidates: N | Suppressed: N | Changes: N | Probes: N in <s>s`. Actions: **Export CSV**, **Resend** (re-send a probe and refresh its status), **Copy URL**, **Copy as cURL**, **Clear**. Non-candidate rows are pruned oldest-first when the retention cap (default 10 000) is reached, so candidate request/response detail is preserved.
+Each probe is one row — **# / Category / Technique / Path / Status / Length / Base / Verdict / Req ms / Res ms** — filterable by text and by **Candidates only** / **Errors only**, and sortable so `CANDIDATE` verdicts float to the top. Selecting a row loads its stored request/response into the embedded ZAP viewers; the **Exact wire** checkbox in the request header swaps that pane for the literal bytes `RawHttpSender` put on the socket. Those bytes are captured at send time, not re-derived from the stored message, so the view is what the server actually received. That distinction matters: the header model cannot represent a colon-less header line, an obs-fold, a bare CR or a literal `#` in the request-target, so for a raw-wire probe the parsed view can quietly disagree with what the server received. The exact view renders CR as `␍`, LF as `␊`, tab as `␉` and escapes other non-printables as `\xNN`, so the line terminators are visible. It is populated only for raw-wire probes: a request sent by ZAP's `HttpSender` was never observed byte-for-byte, so the pane says so instead of inventing a reconstruction. Summary line `Candidates: N | Suppressed: N | Changes: N | Probes: N in <s>s`. Actions: **Export CSV**, **Resend** (re-send a probe and refresh its status), **Copy URL**, **Copy as cURL**, **Clear**. Non-candidate rows are pruned oldest-first when the retention cap (default 10 000) is reached, so candidate request/response detail is preserved.
 
 ### The Log tab
 
@@ -353,7 +369,8 @@ Live status: `Probes: N | Candidates: N | Elapsed: M:SS`, a string-painted progr
 
 - **Work panel** — hooked as a ZAP work panel (`Toolbar`/tabs) plus **Tools → Hacktor…** menu entry.
 - **Context menu** — *Send to Hacktor* is registered on the Sites tree, History and Search message containers, weight 25070, safe for headless use.
-- **Persisted options** — general settings under `hacktor.settings` (key=value), OOB URL under `hacktor.oobUrl`, custom and fixed headers under `hacktor.headers` / `hacktor.fixedheaders`, technique toggles under `hacktor.famOn/.famOff/.rowsOn/.rowsOff`.
+ - **Persisted options** — all configuration is owned by a `HacktorParam` config set registered with ZAP via `ExtensionHook.addOptionsParamSet`, and also surfaced in the ZAP Options dialog (**Options → Hacktor**). Each option is its own key: `hacktor.exactWire`, `hacktor.rateLimit`, `hacktor.threads`, `hacktor.position`, `hacktor.oobUrl`, `hacktor.headers`, `hacktor.fixedheaders`, `hacktor.famOn/.famOff/.rowsOn/.rowsOff`, and so on. Because it is a registered config set, the settings are parsed at startup, survive restarts, and travel with ZAP's own configuration import/export. A config written by an earlier build (all general settings packed into one `hacktor.settings` blob) is expanded into the individual keys on first load and rewritten in the new form, so upgrading does not reset anything.
+
 - **No History pollution from probing** — the add-on sends via its own `HttpSender` (initiator `MANUAL_REQUEST_INITIATOR`); raw-wire probes never transit ZAP's request pipeline. The internal `X-Hacktor-WirePath` / `X-Hacktor-Timing` side-channel headers are stripped before any message is stored, shown or exported.
 - **Unloadable** — `canUnload()` is true; unload unregisters the viewers and panel state.
 
@@ -394,7 +411,7 @@ The `.zap` artifact is a plain ZIP of the compiled add-on directory.
 
 1. Right-click a request in the Sites tree, History or Search → **Send to Hacktor**, or type/paste a target URL in the Target tab.
 2. **Fetch Baseline** (or let the run do it automatically) — the baseline status/length is the yardstick every probe is measured against.
-3. On the Techniques tab, prune as desired — uncheck a tier gate on the Advanced tab, toggle families, disable noisy rows. Configure an OOB **Callback URL** on the Target tab if you want command-execution/XXE/SSRF evidence.
+3. On the Techniques tab, prune as desired — uncheck a tier gate on the Advanced tab, toggle families, disable noisy rows. Use the position filter to work one surface at a time (**URL** or **Header** or **Body**), and keep **All Positions** for the framing and method probes. Configure an OOB **Callback URL** on the Target tab if you want command-execution/XXE/SSRF evidence.
 4. Hit **Run**. Watch the Log tab and the live stats; the run pauses/resumes/stops cleanly and honors the rate limit, threads and backoff knobs.
 5. Click into the Results tab — sort by Verdict, filter **Candidates only**, inspect full messages in the embedded viewers, **Resend** anything, or **Copy as cURL** to re-run a probe outside ZAP.
 6. Tune the catalogue: **Add Custom** a path/header/placement technique, Duplicate and edit built-ins as editable copies, then Export **CSV** for your notes.
@@ -412,7 +429,7 @@ Copy as cURL on the winner ->  manual confirmation
 
 ## Behaviour notes
 
-- **Counts are per-target**: the 7800+ figure is the product of catalogue × placements × segments × tiers × encodings × body params × OOB — not a fixed list, so a small API endpoint generates fewer, a deep multi-segment path generates more.
+- **Counts are per-target**: the 15900+ figure is the product of catalogue × placements × segments × tiers × encodings × body params × OOB — not a fixed list, so a small API endpoint generates fewer, a deep multi-segment path generates more.
 - **Fuzzing is one mutation at a time**: each probe varies exactly one dimension of the request (with custom header rules and body modes applied deterministically), so a verdict is attributable to a single change.
 - **Baseline-or-vs-probe**: candidates are defined by *deviation from the baseline*, so a target whose 403 already renders a 200 banner still yields clean candidates on real differences.
 - **Error-page suppression is unconditional**: the marker-regex + ±12% length heuristic runs before options, so branded "access denied" banners don't pollute results even with suppression toggled.
@@ -439,14 +456,14 @@ src/main/java/org/zaproxy/zap/extension/hacktor/
   HacktorEngine.java                     mutation pipeline: build → tier gate → run → verdict
   RawHttpSender.java                     minimal raw-socket sender (verbatim request head + target)
   OauthEngine.java                       the OAuth 1.0a/2.0/OIDC tamper lab (122 techniques)
-  VulnCatalog.java                       23 injection classes · 308 payloads · 31 OOB templates · tiers
+  VulnCatalog.java                       33 injection classes · 465 payloads · 34 OOB templates · tiers
   Technique.java                         one atomic mutation (family, label, tier, needsRawWire, apply)
   Result.java                            probe outcome + stored HttpMessage
   PayloadEncoder.java                    Recode-style encoders (URL×1/2/3, B64, B64U, Hex, HTML, overlong UTF-8)
   BodyParams.java                        body extraction (form/multipart/JSON/XML) + span-accurate rewrite
   PopupMenuSendToBypass.java             "Send to Hacktor" message-container popup
   technique/
-    <40+ TechniqueBuilder classes>       per-family generators (Fragment, Request Smuggling, Raw
+    <60+ TechniqueBuilder classes>       per-family generators (Fragment, Request Smuggling, Raw
                                          Aberrations, WAF ladders, cache poisoning, …)
 src/main/resources/org/zaproxy/zap/extension/hacktor/
   Messages.properties                    i18n bundle (prefix: hacktor)
@@ -462,6 +479,9 @@ The engine is deliberately flat per probe — each `Technique` carries a compile
 - Design and implementation: **ArkhaMahn** — [github.com/ArkhaMahn/Hacktor](https://github.com/ArkhaMahn/Hacktor).
 - Payload inspiration from the ProjectDiscovery [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates) repository and common public bypass sets.
 - Encoding transforms mirror the **Recode** ZAP add-on's encode/decode/hash/convert ladder.
+- Byte Fuzz, Slash Payload and Minimal Request are ports of the **PortSwigger** [url-fuzzer-401-403-bypass](https://github.com/PortSwigger/url-fuzzer-401-403-bypass) and [403-bypasser](https://github.com/PortSwigger/403-bypasser) research tools.
+- Response-as-Request, Parser Reuse, Content-Range Desync, Permutation Atoms and Desync Polyglot replay corpora ported from the **PortSwigger** [http-request-smuggler](https://github.com/PortSwigger/http-request-smuggler) research tool.
+- Ten injection classes (Backslash Decode, Function Injection, Magic Value, Function Hijacking, Escape Sequence, Comment Injection, Order By Injection, HTML Tag Fuzzing, HPP Injection, JSON Injection) ported from the **PortSwigger** [backslash-powered-scanner](https://github.com/PortSwigger/backslash-powered-scanner) research tool.
 - Companion ZAP work: **GhostJS** — [github.com/ArkhaMahn/zap-ghostjs](https://github.com/ArkhaMahn/zap-ghostjs).
 
 ## License
