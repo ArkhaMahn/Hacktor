@@ -9,6 +9,9 @@ public class RequestLineTechniqueBuilder extends AbstractTechniqueBuilder {
     @Override public String getFamily() { return "Request Line"; }
     @Override public int getOrder() { return 22; }
 
+    @Override public Technique.Position getPosition() { return Technique.Position.REQUEST; }
+
+
     @Override
     public void build(List<Technique> techs, BiConsumer<HttpMessage, String> setPath,
                       TechniqueBuilder.PathContext ctx) {
