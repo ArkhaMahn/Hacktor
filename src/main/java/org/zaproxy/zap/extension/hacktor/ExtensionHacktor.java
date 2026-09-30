@@ -39,7 +39,6 @@ public class ExtensionHacktor extends ExtensionAdaptor {
             panel = new HacktorPanel(this);
             ExtensionHookView hookView = extensionHook.getHookView();
             hookView.addWorkPanel(panel);
-            hookView.addOptionPanel(new HacktorParamPanel());
 
             // Tools menu item
             JMenuItem menuItem = new JMenuItem("Hacktor\u2026");
